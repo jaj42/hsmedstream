@@ -9,19 +9,9 @@ import System.Environment (getArgs)
 
 import qualified System.Hardware.Serialport as Serial
 
-import Control.Monad (forever)
 import Control.Lens
+import Control.Monad (forever)
 import qualified Control.Exception as Ex
-
-import Pipes
-import qualified Pipes.Prelude as P
-
-import qualified Pipes.Text as PT
-import qualified Pipes.Text.IO as PT
-
-import Data.Attoparsec.Text
-import qualified Pipes.Attoparsec
-import qualified Pipes.Parse
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -30,13 +20,21 @@ import qualified Data.Text.IO as T
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 
+import Pipes
+import qualified Pipes.Prelude as P
+
+import qualified Pipes.Text as PT
+import qualified Pipes.Text.IO as PT
+
+import Data.Attoparsec.Text
+import qualified Pipes.Parse as PP
+import qualified Pipes.Attoparsec as PA
+
 import qualified Data.MessagePack as MsgPack
 
 import qualified System.ZMQ4 as Z
 import qualified Pipes.ZMQ4 as PZ
-import qualified Pipes.Safe as PS
-import qualified Pipes.Group as PG
-import qualified Data.List.NonEmpty as NE
+import Data.List.NonEmpty (NonEmpty(..))
 
 type DevPath = String
 
@@ -77,15 +75,14 @@ parseAniData = do
     delimiter
     instant <- decimal
     delimiter
-    skipSpace
     mean <- decimal
     delimiter
     f <- rational
     delimiter
     return $ AniData dt h instant mean f
 
-pipeParser :: (MonadIO m) => Pipes.Parse.Parser Text m (Maybe (Either Pipes.Attoparsec.ParsingError AniData))
-pipeParser = Pipes.Attoparsec.parse parseAniData
+pipeParser :: (MonadIO m) => PP.Parser Text m (Maybe (Either PA.ParsingError AniData))
+pipeParser = PA.parse parseAniData
 
 
 main :: IO ()
@@ -99,7 +96,7 @@ main = do
 
 pipeline :: SysIO.Handle -> IO ()
 --pipeline hIn = Z.withContext $ \ctx -> PS.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn) >-> pipeMsgPack >-> singleToNonEmpty >-> zmqConsumer ctx
-pipeline hIn = Z.withContext $ \ctx -> PS.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn) >-> pipeMsgPack >-> singleToNonEmpty >-> P.tee P.print >-> zmqConsumer ctx
+pipeline hIn = Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn) >-> pipeMsgPack >-> singleToNonEmpty >-> P.tee P.print >-> zmqConsumer ctx
 
 -- ZMQ related
 zmqConsumer ctx = PZ.setupConsumer ctx Z.Pub (`Z.bind` "tcp://127.0.0.1:5555")
@@ -107,7 +104,7 @@ zmqConsumer ctx = PZ.setupConsumer ctx Z.Pub (`Z.bind` "tcp://127.0.0.1:5555")
 -- Parsing related
 parseForever :: (MonadIO m) => Producer Text m () -> Producer AniData m ()
 parseForever inflow = do 
-    (r, p) <- lift $ Pipes.Parse.runStateT pipeParser inflow
+    (r, p) <- lift $ PP.runStateT pipeParser inflow
     case r of
          Nothing -> return ()
          Just e  -> case e of
@@ -115,8 +112,8 @@ parseForever inflow = do
                          Left _ -> parseForever (p >-> P.drop 1)
                          Right entry -> yield entry >> parseForever p
 
-singleToNonEmpty :: (MonadIO m) => Pipe a (NE.NonEmpty a) m ()
-singleToNonEmpty = P.map (NE.:| [])
+singleToNonEmpty :: (MonadIO m) => Pipe a (NonEmpty a) m ()
+singleToNonEmpty = P.map (:| [])
 
 pipeMsgPack :: (MonadIO m) => Pipe AniData B.ByteString m ()
 --pipeMsgPack = P.map (BL.toStrict . MsgPack.pack . instant)
