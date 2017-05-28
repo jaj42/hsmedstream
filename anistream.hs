@@ -116,12 +116,8 @@ singleToNonEmpty :: (MonadIO m) => Pipe a (NonEmpty a) m ()
 singleToNonEmpty = P.map (:| [])
 
 pipeMsgPack :: (MonadIO m) => Pipe AniData B.ByteString m ()
---pipeMsgPack = P.map (BL.toStrict . MsgPack.pack . instant)
-pipeMsgPack = P.map genMsg
-
-
-genMsg :: AniData -> B.ByteString
-genMsg anidata = "ani " `B.append` (BL.toStrict . MsgPack.pack . preprocess $ anidata)
+pipeMsgPack = P.map $ \anidata ->
+    "ani " `B.append` (BL.toStrict . MsgPack.pack . preprocess $ anidata)
   where
     preprocess AniData {instant=anival} = MsgPack.Assoc [("ani" :: B.ByteString, anival)]
 
