@@ -99,7 +99,7 @@ pipeline :: SysIO.Handle -> IO ()
 pipeline hIn = Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn) >-> pipeMsgPack >-> singleToNonEmpty >-> P.tee P.print >-> zmqConsumer ctx
 
 -- ZMQ related
-zmqConsumer ctx = PZ.setupConsumer ctx Z.Pub (`Z.bind` "tcp://127.0.0.1:5555")
+zmqConsumer ctx = PZ.setupConsumer ctx Z.Pub (`Z.bind` "tcp://*:5555")
 
 -- Parsing related
 parseForever :: (MonadIO m) => Producer Text m () -> Producer AniData m ()
@@ -119,7 +119,7 @@ pipeMsgPack :: (MonadIO m) => Pipe AniData B.ByteString m ()
 pipeMsgPack = P.map $ \anidata ->
     "ani " `B.append` (BL.toStrict . MsgPack.pack . preprocess $ anidata)
   where
-    preprocess AniData {instant=anival} = MsgPack.Assoc [("ani" :: B.ByteString, anival)]
+    preprocess AniData {instant=anival} = MsgPack.Assoc [("ani" :: String, anival)]
 
 -- IO related
 withSerial :: DevPath -> Serial.SerialPortSettings -> (SysIO.Handle -> IO a) -> IO a
