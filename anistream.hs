@@ -62,10 +62,9 @@ dateTimeParser = do
     minute <- decimal
     char ':'
     seconds <- count 2 digit
-    return $
-      Time.LocalTime { Time.localDay = Time.fromGregorian year month day
-                     , Time.localTimeOfDay = Time.TimeOfDay hour minute (read seconds)
-                     }
+    return Time.LocalTime { Time.localDay = Time.fromGregorian year month day
+                          , Time.localTimeOfDay = Time.TimeOfDay hour minute (read seconds)
+                          }
 
 parseAniData :: Parser AniData
 parseAniData = do
@@ -95,11 +94,11 @@ main = do
     --dorun _ = SysIO.withFile "anitest.txt" SysIO.ReadMode pipeline
 
 pipeline :: SysIO.Handle -> IO ()
---pipeline hIn = Z.withContext $ \ctx -> PS.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn) >-> pipeMsgPack >-> singleToNonEmpty >-> zmqConsumer ctx
-pipeline hIn = Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn) >-> pipeMsgPack >-> singleToNonEmpty >-> P.tee P.print >-> zmqConsumer ctx
+pipeline hIn = Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn)
+               >-> pipeMsgPack >-> singleToNonEmpty >-> P.tee P.print >-> zmqConsumer ctx
 
 -- ZMQ related
-zmqConsumer ctx = PZ.setupConsumer ctx Z.Pub (`Z.bind` "tcp://*:5555")
+zmqConsumer ctx = PZ.setupConsumer ctx Z.Pub (`Z.connect` "tcp://127.0.0.1:4200")
 
 -- Parsing related
 parseForever :: (MonadIO m) => Producer Text m () -> Producer AniData m ()

@@ -11,7 +11,7 @@ context = zmq.Context()
 socket = context.socket(zmq.SUB)
 socket.setsockopt(zmq.SUBSCRIBE, b'')
 
-socket.connect ("tcp://127.0.0.1:5555")
+socket.bind("tcp://*:4200")
 
 terminate = threading.Event()
 
