@@ -7,7 +7,7 @@ import qualified Data.Time as Time
 import qualified System.IO as SysIO
 import System.Environment (getArgs)
 
-import qualified System.Hardware.Serialport as Serial
+import qualified System.Hardware.Serialport as S
 
 import Control.Lens
 import Control.Monad (forever)
@@ -39,10 +39,10 @@ import Data.List.NonEmpty (NonEmpty(..))
 type DevPath = String
 
 data AniData = AniData { datetime :: Time.LocalTime
-                       , hoth :: Int
+                       , valid :: Bool
                        , instant :: Int
                        , mean :: Int
-                       , flt :: Float
+                       , energy :: Float
                        } deriving (Show)
 
 delimiter :: Parser ()
@@ -70,19 +70,23 @@ parseAniData :: Parser AniData
 parseAniData = do
     dt <- dateTimeParser
     delimiter
-    h <- hexadecimal
+    sqi <- hexadecimal :: Parser Int
     delimiter
     instant <- decimal
     delimiter
     mean <- decimal
     delimiter
-    f <- rational
+    energy <- rational
     delimiter
-    return $ AniData dt h instant mean f
+    --takeWhile (\c -> c /= '\n')
+    let valid = if sqi == 1 || sqi == 0xAA then True else False
+    return $ AniData dt valid instant mean energy
 
 pipeParser :: (MonadIO m) => PP.Parser Text m (Maybe (Either PA.ParsingError AniData))
 pipeParser = PA.parse parseAniData
 
+aniSerialSettings :: S.SerialPortSettings
+aniSerialSettings = S.SerialPortSettings S.CS9600 8 S.One S.NoParity S.NoFlowControl 1
 
 main :: IO ()
 main = do
@@ -90,12 +94,12 @@ main = do
     let devpath = args !! 0
     dorun devpath
   where
-    dorun dev = withSerial dev Serial.defaultSerialSettings pipeline
+    dorun dev = withSerial dev aniSerialSettings pipeline
     --dorun _ = SysIO.withFile "anitest.txt" SysIO.ReadMode pipeline
 
 pipeline :: SysIO.Handle -> IO ()
 pipeline hIn = Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn)
-               >-> pipeMsgPack >-> singleToNonEmpty >-> P.tee P.print >-> zmqConsumer ctx
+               >-> dropInvalid >-> toMsgPack >-> P.tee P.print >-> singleToNonEmpty >-> zmqConsumer ctx
 
 -- ZMQ related
 zmqConsumer ctx = PZ.setupConsumer ctx Z.Pub (`Z.connect` "tcp://127.0.0.1:4200")
@@ -114,15 +118,19 @@ parseForever inflow = do
 singleToNonEmpty :: (MonadIO m) => Pipe a (NonEmpty a) m ()
 singleToNonEmpty = P.map (:| [])
 
-pipeMsgPack :: (MonadIO m) => Pipe AniData B.ByteString m ()
-pipeMsgPack = P.map $ \anidata ->
+dropInvalid :: (MonadIO m) => Pipe AniData AniData m ()
+dropInvalid = P.filter $ \anidata -> (valid anidata == True)
+
+toMsgPack :: (MonadIO m) => Pipe AniData B.ByteString m ()
+toMsgPack = P.map $ \anidata ->
     "ani " `B.append` (BL.toStrict . MsgPack.pack . preprocess $ anidata)
   where
-    preprocess AniData {instant=anival} = MsgPack.Assoc [("ani" :: String, anival)]
+    preprocess anival = MsgPack.Assoc [("ani" :: String, show(instant anival)),
+                                       ("anienergy" :: String, show(energy anival))]
 
 -- IO related
-withSerial :: DevPath -> Serial.SerialPortSettings -> (SysIO.Handle -> IO a) -> IO a
-withSerial dev settings = Ex.bracket (Serial.hOpenSerial dev settings) SysIO.hClose
+withSerial :: DevPath -> S.SerialPortSettings -> (SysIO.Handle -> IO a) -> IO a
+withSerial dev settings = Ex.bracket (S.hOpenSerial dev settings) SysIO.hClose
 
 linesFromHandleForever :: (MonadIO m) => SysIO.Handle -> Producer Text m ()
 linesFromHandleForever h = lineByLine (forever go) >-> removeEmpty where
