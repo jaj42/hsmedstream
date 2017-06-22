@@ -20,7 +20,7 @@ def go():
     writer = None
     firsttime = True
     with open('ani.csv', 'w', newline='') as csvfile:
-        while not terminate.wait(timeout=.1):
+        while not terminate.is_set():
             try:
                 msg = socket.recv(flags=zmq.NOBLOCK)
             except zmq.Again as e:
@@ -28,6 +28,9 @@ def go():
                 continue
             orig, msgpackdata = msg.split(b' ', 1)
             unpacked = msgpack.unpackb(msgpackdata, encoding='utf-8')
+            if not isinstance(unpacked, dict):
+                print("Message garbled: {}", unpacked)
+                continue
             unpacked.update({'datetime': str(datetime.now())})
             if firsttime:
                 writer = csv.DictWriter(csvfile, fieldnames=list(unpacked.keys()))
