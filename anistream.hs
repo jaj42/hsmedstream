@@ -130,8 +130,7 @@ toMsgPack = P.map $ \anidata ->
   where
     preprocess anival = MsgPack.Assoc [("instant" :: String, show $ instant anival),
                                        ("mean" :: String,    show $ mean anival),
-                                       ("energy" :: String,  show $ energy anival),
-                                       ("event" :: String,   event anival)]
+                                       ("energy" :: String,  show $ energy anival)]
 
 -- IO related
 withSerial :: DevPath -> S.SerialPortSettings -> (SysIO.Handle -> IO a) -> IO a
