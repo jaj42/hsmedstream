@@ -3,6 +3,8 @@
 
 module Main where
 
+import Prelude hiding (takeWhile)
+
 import qualified Data.Time as Time
 import qualified System.IO as SysIO
 import System.Environment (getArgs)
@@ -43,6 +45,7 @@ data AniData = AniData { datetime :: Time.LocalTime
                        , instant :: Int
                        , mean :: Int
                        , energy :: Float
+                       , event :: String
                        } deriving (Show)
 
 delimiter :: Parser ()
@@ -77,10 +80,10 @@ parseAniData = do
     mean <- decimal
     delimiter
     energy <- rational
-    delimiter
-    --takeWhile (\c -> c /= '\n')
+    char '|'
+    event <- takeWhile (\c -> c /= '\n')
     let valid = if sqi == 1 || sqi == 0xAA then True else False
-    return $ AniData dt valid instant mean energy
+    return $ AniData dt valid instant mean energy (T.unpack event)
 
 pipeParser :: (MonadIO m) => PP.Parser Text m (Maybe (Either PA.ParsingError AniData))
 pipeParser = PA.parse parseAniData
@@ -127,7 +130,8 @@ toMsgPack = P.map $ \anidata ->
   where
     preprocess anival = MsgPack.Assoc [("instant" :: String, show $ instant anival),
                                        ("mean" :: String,    show $ mean anival),
-                                       ("energy" :: String,  show $ energy anival)]
+                                       ("energy" :: String,  show $ energy anival),
+                                       ("event" :: String,   event anival)]
 
 -- IO related
 withSerial :: DevPath -> S.SerialPortSettings -> (SysIO.Handle -> IO a) -> IO a
