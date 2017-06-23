@@ -112,7 +112,7 @@ parseForever inflow = do
          Nothing -> return ()
          Just e  -> case e of
                          -- Drop current line on parsing error and continue
-                         Left _ -> parseForever (p >-> P.drop 1)
+                         Left _      -> parseForever (p >-> P.drop 1)
                          Right entry -> yield entry >> parseForever p
 
 singleToNonEmpty :: (MonadIO m) => Pipe a (NonEmpty a) m ()
@@ -125,17 +125,18 @@ toMsgPack :: (MonadIO m) => Pipe AniData B.ByteString m ()
 toMsgPack = P.map $ \anidata ->
     "ani " `B.append` (BL.toStrict . MsgPack.pack . preprocess $ anidata)
   where
-    preprocess anival = MsgPack.Assoc [("ani" :: String, show(instant anival)),
-                                       ("anienergy" :: String, show(energy anival))]
+    preprocess anival = MsgPack.Assoc [("instant" :: String, show $ instant anival),
+                                       ("mean" :: String,    show $ mean anival),
+                                       ("energy" :: String,  show $ energy anival)]
 
 -- IO related
 withSerial :: DevPath -> S.SerialPortSettings -> (SysIO.Handle -> IO a) -> IO a
 withSerial dev settings = Ex.bracket (S.hOpenSerial dev settings) SysIO.hClose
 
 linesFromHandleForever :: (MonadIO m) => SysIO.Handle -> Producer Text m ()
-linesFromHandleForever h = lineByLine (forever go) >-> removeEmpty where
+linesFromHandleForever h = lineByLine (forever go)
+  where
     lineByLine = view PT.unlines . view PT.lines
     go = liftIO (T.hGetChunk h) >>= process
     process txt | T.null txt = return ()
                 | otherwise  = yield txt
-    removeEmpty = P.filter (/= T.singleton '\n')
