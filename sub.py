@@ -31,11 +31,12 @@ def go():
             if not isinstance(unpacked, dict):
                 print("Message garbled: {}", unpacked)
                 continue
-            unpacked.update({'datetime': str(datetime.now())})
             if firsttime:
-                writer = csv.DictWriter(csvfile, fieldnames=list(unpacked.keys()))
+                headers = ['datetime'] + list(unpacked.keys())
+                writer = csv.DictWriter(csvfile, fieldnames=headers)
                 writer.writeheader()
                 firsttime = False
+            unpacked.update({'datetime': str(datetime.now())})
             writer.writerow(unpacked)
             print(msgpackdata, unpacked)
 
