@@ -82,6 +82,7 @@ parseAniData = do
     energy <- rational
     char '|'
     event <- takeWhile (\c -> c /= '\n')
+    skipSpace
     let valid = if sqi == 1 || sqi == 0xAA then True else False
     return $ AniData dt valid instant mean energy (T.unpack event)
 
@@ -102,10 +103,10 @@ main = do
 
 pipeline :: SysIO.Handle -> IO ()
 pipeline hIn = Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn)
-               >-> dropInvalid >-> toMsgPack >-> P.tee P.print >-> singleToNonEmpty >-> zmqConsumer ctx
+               >-> P.tee P.print >-> dropInvalid >-> toMsgPack >-> zmqConsumer ctx
 
 -- ZMQ related
-zmqConsumer ctx = PZ.setupConsumer ctx Z.Pub (`Z.connect` "tcp://127.0.0.1:4200")
+zmqConsumer ctx = P.map (:| []) >-> PZ.setupConsumer ctx Z.Pub (`Z.connect` "tcp://127.0.0.1:4200")
 
 -- Parsing related
 parseForever :: (MonadIO m) => Producer Text m () -> Producer AniData m ()
@@ -117,9 +118,6 @@ parseForever inflow = do
                          -- Drop current line on parsing error and continue
                          Left _      -> parseForever (p >-> P.drop 1)
                          Right entry -> yield entry >> parseForever p
-
-singleToNonEmpty :: (MonadIO m) => Pipe a (NonEmpty a) m ()
-singleToNonEmpty = P.map (:| [])
 
 dropInvalid :: (MonadIO m) => Pipe AniData AniData m ()
 dropInvalid = P.filter $ \anidata -> (valid anidata == True)
