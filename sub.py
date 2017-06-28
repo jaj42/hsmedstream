@@ -25,11 +25,13 @@ def go():
     global terminate
     writer = None
     firsttime = True
+    dt = None
     outfile = os.path.join(outfolder, 'ani.csv')
     with open(outfile, 'w', newline='') as csvfile:
         while not terminate.is_set():
             try:
                 msg = socket.recv(flags=zmq.NOBLOCK)
+                dt = datetime.now()
             except zmq.Again as e:
                 # No message received
                 continue
@@ -43,7 +45,7 @@ def go():
                 writer = csv.DictWriter(csvfile, fieldnames=headers)
                 writer.writeheader()
                 firsttime = False
-            unpacked.update({'datetime': str(datetime.now())})
+            unpacked.update({'datetime': str(dt)})
             writer.writerow(unpacked)
             print(msgpackdata, unpacked)
 
