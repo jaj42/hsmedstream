@@ -148,8 +148,6 @@ main = do
     dorun _ = SysIO.withFile "odmtest.csv" SysIO.ReadMode commonPipe
 
 commonPipe :: SysIO.Handle -> IO ()
---commonPipe hIn = Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseNumForever (linesFromHandleForever hIn)
---               >-> P.tee P.print >-> calcToMsgPack >-> zmqNumConsumer ctx
 commonPipe hIn = do
     (output1, input1) <- spawn unbounded
     (output2, input2) <- spawn unbounded
@@ -158,8 +156,10 @@ commonPipe hIn = do
         performGC
     a2 <- async $ do
         Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseWaveForever (fromInput input1) >-> P.tee P.print >-> waveToMsgPack >-> zmqWaveConsumer ctx
+        performGC
     a3 <- async $ do
         Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseNumForever (fromInput input2) >-> P.tee P.print >-> numToMsgPack >-> zmqNumConsumer ctx
+        performGC
     mapM_ wait (a1:a2:a3:[])
 
 -- Parsing related
