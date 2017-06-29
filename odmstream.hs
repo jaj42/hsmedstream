@@ -11,9 +11,11 @@ import System.Environment (getArgs)
 
 import qualified System.Hardware.Serialport as S
 
+import Data.Monoid
 import Control.Lens
 import Control.Monad (forever, forM)
 import Control.Applicative ((<|>))
+import Control.Concurrent.Async
 import qualified Control.Exception as Ex
 
 import Data.Text (Text)
@@ -24,7 +26,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 
 import Pipes
-import Pipes.Extras (delay)
+import Pipes.Concurrent
 import qualified Pipes.Prelude as P
 
 import qualified Pipes.Text as PT
@@ -41,7 +43,6 @@ import qualified Pipes.ZMQ4 as PZ
 import Data.List.NonEmpty (NonEmpty(..))
 
 type DevPath = String
-
 
 type Flow = Integer
 type Pressure = Integer
@@ -149,8 +150,17 @@ main = do
 commonPipe :: SysIO.Handle -> IO ()
 --commonPipe hIn = Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseNumForever (linesFromHandleForever hIn)
 --               >-> P.tee P.print >-> calcToMsgPack >-> zmqNumConsumer ctx
-commonPipe hIn = Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseWaveForever (linesFromHandleForever hIn)
-               >-> P.tee P.print >-> waveToMsgPack >-> zmqWaveConsumer ctx
+commonPipe hIn = do
+    (output1, input1) <- spawn unbounded
+    (output2, input2) <- spawn unbounded
+    a1 <- async $ do
+        runEffect $ linesFromHandleForever hIn >-> toOutput (output1 <> output2)
+        performGC
+    a2 <- async $ do
+        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseWaveForever (fromInput input1) >-> P.tee P.print >-> waveToMsgPack >-> zmqWaveConsumer ctx
+    a3 <- async $ do
+        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseNumForever (fromInput input2) >-> P.tee P.print >-> numToMsgPack >-> zmqNumConsumer ctx
+    mapM_ wait (a1:a2:a3:[])
 
 -- Parsing related
 parseNumForever :: (MonadIO m) => Producer Text m () -> Producer OdmCalc m ()
@@ -173,8 +183,8 @@ parseWaveForever inflow = do
                          Left _      -> parseWaveForever (p >-> P.drop 1)
                          Right entry -> forM entry yield >> parseWaveForever p
 
-calcToMsgPack :: (MonadIO m) => Pipe OdmCalc B.ByteString m ()
-calcToMsgPack = P.map $ \odmdata ->
+numToMsgPack :: (MonadIO m) => Pipe OdmCalc B.ByteString m ()
+numToMsgPack = P.map $ \odmdata ->
     "odm " `B.append` (BL.toStrict . MsgPack.pack . preprocess $ odmdata)
   where
     preprocess odmval = MsgPack.Assoc [("co"   :: String, show $ co odmval),
