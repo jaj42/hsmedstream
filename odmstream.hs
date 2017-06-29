@@ -203,7 +203,7 @@ waveToMsgPack :: (MonadIO m) => Pipe OdmWave B.ByteString m ()
 waveToMsgPack = P.map $ \odmdata ->
     "odm " `B.append` (BL.toStrict . MsgPack.pack . preprocess $ odmdata)
   where
-    preprocess (p, u) = MsgPack.Assoc [("p" :: String, show p),
+    preprocess (u, p) = MsgPack.Assoc [("p" :: String, show p),
                                        ("u" :: String, show u)]
 
 -- ZMQ related
