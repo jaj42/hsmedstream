@@ -3,8 +3,6 @@
 
 module Main where
 
-import Prelude hiding (takeWhile)
-
 import qualified Data.Time as Time
 import qualified System.IO as SysIO
 import System.Environment (getArgs)
@@ -44,8 +42,8 @@ import Data.List.NonEmpty (NonEmpty(..))
 
 type DevPath = String
 
-type Flow = Integer
-type Pressure = Integer
+type Flow = Int
+type Pressure = Int
 type OdmWave = (Flow, Pressure)
 
 data OdmNomogram = Adult | Paediatric | Dog | None
@@ -144,8 +142,8 @@ main = do
     let devpath = args !! 0
     dorun devpath
   where
-    --dorun dev = withSerial dev odmSerialSettings commonPipe
-    dorun _ = SysIO.withFile "odmtest.csv" SysIO.ReadMode commonPipe
+    dorun dev = withSerial dev odmSerialSettings commonPipe
+    --dorun _ = SysIO.withFile "odmtest.csv" SysIO.ReadMode commonPipe
 
 commonPipe :: SysIO.Handle -> IO ()
 commonPipe hIn = do
@@ -187,24 +185,24 @@ numToMsgPack :: (MonadIO m) => Pipe OdmCalc B.ByteString m ()
 numToMsgPack = P.map $ \odmdata ->
     "odm " `B.append` (BL.toStrict . MsgPack.pack . preprocess $ odmdata)
   where
-    preprocess odmval = MsgPack.Assoc [("co"   :: String, show $ co odmval),
-                                       ("sv"   :: String, show $ sv odmval),
-                                       ("hr"   :: String, show $ hr odmval),
-                                       ("md"   :: String, show $ md odmval),
-                                       ("sd"   :: String, show $ sd odmval),
-                                       ("ftc"  :: String, show $ ftc odmval),
-                                       ("fttp" :: String, show $ fttp odmval),
-                                       ("ma"   :: String, show $ ma odmval),
-                                       ("pv"   :: String, show $ pv odmval),
-                                       ("ci"   :: String, show $ ci odmval),
-                                       ("svi"  :: String, show $ svi odmval)]
+    preprocess odmval = MsgPack.Assoc [("co"   :: String, MsgPack.toObject $ co odmval),
+                                       ("sv"   :: String, MsgPack.toObject $ sv odmval),
+                                       ("hr"   :: String, MsgPack.toObject $ hr odmval),
+                                       ("md"   :: String, MsgPack.toObject $ md odmval),
+                                       ("sd"   :: String, MsgPack.toObject $ sd odmval),
+                                       ("ftc"  :: String, MsgPack.toObject $ ftc odmval),
+                                       ("fttp" :: String, MsgPack.toObject $ fttp odmval),
+                                       ("ma"   :: String, MsgPack.toObject $ ma odmval),
+                                       ("pv"   :: String, MsgPack.toObject $ pv odmval),
+                                       ("ci"   :: String, MsgPack.toObject $ ci odmval),
+                                       ("svi"  :: String, MsgPack.toObject $ svi odmval)]
 
 waveToMsgPack :: (MonadIO m) => Pipe OdmWave B.ByteString m ()
 waveToMsgPack = P.map $ \odmdata ->
     "odm " `B.append` (BL.toStrict . MsgPack.pack . preprocess $ odmdata)
   where
-    preprocess (u, p) = MsgPack.Assoc [("p" :: String, show p),
-                                       ("u" :: String, show u)]
+    preprocess (u, p) = MsgPack.Assoc [("p" :: String, MsgPack.toObject p),
+                                       ("u" :: String, MsgPack.toObject u)]
 
 -- ZMQ related
 zmqNumConsumer :: (PZ.Base m ~ IO, PZ.MonadSafe m) => Z.Context -> Consumer B.ByteString m ()

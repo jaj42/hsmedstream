@@ -99,14 +99,14 @@ main = do
     dorun devpath
   where
     dorun dev = withSerial dev aniSerialSettings pipeline
-    --dorun _ = SysIO.withFile "anitest.txt" SysIO.ReadMode pipeline
+    --dorun _ = SysIO.withFile "anitest.csv" SysIO.ReadMode pipeline
 
 pipeline :: SysIO.Handle -> IO ()
 pipeline hIn = Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn)
                >-> P.tee P.print >-> dropInvalid >-> toMsgPack >-> zmqConsumer ctx
 
 -- ZMQ related
-zmqConsumer ctx = P.map (:| []) >-> PZ.setupConsumer ctx Z.Pub (`Z.connect` "tcp://127.0.0.1:4200")
+zmqConsumer ctx = P.map (:| []) >-> PZ.setupConsumer ctx Z.Pub (`Z.connect` "tcp://127.0.0.1:4201")
 
 -- Parsing related
 parseForever :: (MonadIO m) => Producer Text m () -> Producer AniData m ()
@@ -126,9 +126,9 @@ toMsgPack :: (MonadIO m) => Pipe AniData B.ByteString m ()
 toMsgPack = P.map $ \anidata ->
     "ani " `B.append` (BL.toStrict . MsgPack.pack . preprocess $ anidata)
   where
-    preprocess anival = MsgPack.Assoc [("instant" :: String, show $ instant anival),
-                                       ("mean" :: String,    show $ mean anival),
-                                       ("energy" :: String,  show $ energy anival)]
+    preprocess anival = MsgPack.Assoc [("instant" :: String, MsgPack.toObject $ instant anival),
+                                       ("mean" :: String,    MsgPack.toObject $ mean anival),
+                                       ("energy" :: String,  MsgPack.toObject $ energy anival)]
 
 -- IO related
 withSerial :: DevPath -> S.SerialPortSettings -> (SysIO.Handle -> IO a) -> IO a
