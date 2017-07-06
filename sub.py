@@ -1,19 +1,12 @@
-import csv
-import sys
-import os
-from threading import Thread, Event
-from enum import Enum
-from time import strftime, sleep
+from csv import DictWriter
 from datetime import datetime
+from enum import Enum
 from io import IOBase
+from threading import Thread, Event
+from time import strftime, sleep
 
 import msgpack
 import zmq
-
-if len(sys.argv) > 1:
-    outfolder = sys.argv[1]
-else:
-    outfolder = '.'
 
 class LogType(Enum):
     NUMERICS = 4201
@@ -44,7 +37,7 @@ class Logger(Thread):
 
         csvheaders = ['datetime'] + sorted(list(self.allheaders))
 
-        self.writer = csv.DictWriter(filehandle, fieldnames=csvheaders)
+        self.writer = DictWriter(filehandle, fieldnames=csvheaders)
         self.writer.writeheader()
 
     def run(self):
@@ -55,6 +48,7 @@ class Logger(Thread):
                 dt = datetime.now()
             except zmq.Again:
                 # Timed out
+                #print('.', end='', flush=True)
                 continue
 
             try:
@@ -64,7 +58,8 @@ class Logger(Thread):
                 if not isinstance(unpacked, dict):
                     raise ValueError("Message garbled: {}", unpacked)
                 origin = orig.decode('utf-8')
-            except:
+            except Exception as e:
+                print('Parsing error: {}'.format(e))
                 continue
 
             data = {origin + key : value for key, value in unpacked.items()}
@@ -78,7 +73,6 @@ class Logger(Thread):
 
             data.update({'datetime': str(dt)})
             self.writer.writerow(data)
-            #print(data)
 
 terminate = Event()
 
