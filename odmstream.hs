@@ -125,7 +125,9 @@ parseOdmWave = do
         flow <- decimal
         char ';'
         pressure <- decimal
-        return (flow, pressure)
+        -- Bug makes odm spit out flow * 4
+        let flowcorr = quot flow 4
+        return (flowcorr, pressure)
 
 calcParser :: (MonadIO m) => PP.Parser Text m (Maybe (Either PA.ParsingError OdmCalc))
 calcParser = PA.parse parseOdmCalc
@@ -153,12 +155,12 @@ commonPipe hIn = do
         runEffect $ linesFromHandleForever hIn >-> toOutput (output1 <> output2)
         performGC
     a2 <- async $ do
-        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseWaveForever (fromInput input1) >-> P.tee P.print >-> waveToMsgPack >-> zmqWaveConsumer ctx
+        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseWaveForever (fromInput input1) >-> waveToMsgPack >-> zmqWaveConsumer ctx
         performGC
     a3 <- async $ do
         Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseNumForever (fromInput input2) >-> P.tee P.print >-> numToMsgPack >-> zmqNumConsumer ctx
         performGC
-    mapM_ wait (a1:a2:a3:[])
+    mapM_ wait [a1, a2, a3]
 
 -- Parsing related
 parseNumForever :: (MonadIO m) => Producer Text m () -> Producer OdmCalc m ()
