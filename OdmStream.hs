@@ -134,7 +134,7 @@ parseOdmWave = do
         -- Bug makes ODM spit out velocity * 4
         let velcorr = quot velocity 4
         return (velcorr, pressure)
-    let timedeltas = (+ dt) <$> (/ 180) <$> [0..]
+    let timedeltas = (+ dt) . (/ 180) <$> [0..]
     return $ ziptd timedeltas (unzip dat)
   where
     ziptd d (v, p) = zip3 d v p
