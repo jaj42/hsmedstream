@@ -154,8 +154,8 @@ main = do
     let devpath = args !! 0
     dorun devpath
   where
-    --dorun dev = withSerial dev odmSerialSettings pipeLine
-    dorun _ = SysIO.withFile "odmtest.csv" SysIO.ReadMode pipeLine
+    dorun dev = withSerial dev odmSerialSettings pipeLine
+    --dorun _ = SysIO.withFile "odmtest.csv" SysIO.ReadMode pipeLine
 
 pipeLine :: SysIO.Handle -> IO ()
 pipeLine hIn = do
@@ -165,10 +165,10 @@ pipeLine hIn = do
         runEffect $ linesFromHandleForever hIn >-> toOutput (output1 <> output2)
         performGC
     a2 <- async $ do
-        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseWaveForever (fromInput input1) >-> P.tee P.print >-> waveToMsgPack >-> zmqWaveConsumer ctx
+        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseWaveForever (fromInput input1) >-> waveToMsgPack >-> zmqWaveConsumer ctx
         performGC
     a3 <- async $ do
-        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseNumForever (fromInput input2) >-> numToMsgPack >-> zmqNumConsumer ctx
+        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseNumForever (fromInput input2) >-> P.tee P.print >-> numToMsgPack >-> zmqNumConsumer ctx
         performGC
     mapM_ wait [a1, a2, a3]
 

@@ -48,7 +48,7 @@ class Logger(Thread):
                 dt = datetime.now()
             except zmq.Again:
                 # Timed out
-                #print('.', end='', flush=True)
+                print('.', end='', flush=True)
                 continue
 
             try:
