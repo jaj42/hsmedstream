@@ -1,9 +1,14 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Main where
 
-import qualified Data.Time as Time
+import Data.Time.Calendar (fromGregorian)
+import Data.Time.Clock (UTCTime(..))
+import Data.Time.LocalTime (TimeOfDay(..), timeOfDayToTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+
 import qualified System.IO as SysIO
 import System.Environment (getArgs)
 
@@ -11,7 +16,7 @@ import qualified System.Hardware.Serialport as S
 
 import Data.Monoid
 import Control.Lens
-import Control.Monad (forever, forM)
+import Control.Monad (forever, forM_)
 import Control.Applicative ((<|>))
 import Control.Concurrent.Async
 import qualified Control.Exception as Ex
@@ -34,7 +39,7 @@ import Data.Attoparsec.Text
 import qualified Pipes.Parse as PP
 import qualified Pipes.Attoparsec as PA
 
-import qualified Data.MessagePack as MsgPack
+import qualified Data.MessagePack as M
 
 import qualified System.ZMQ4 as Z
 import qualified Pipes.ZMQ4 as PZ
@@ -42,14 +47,14 @@ import Data.List.NonEmpty (NonEmpty(..))
 
 type DevPath = String
 
-type Flow = Int
+type Velocity = Int
 type Pressure = Int
-type OdmWave = (Flow, Pressure)
+type OdmWave = (Double, Velocity, Pressure)
 
 data OdmNomogram = Adult | Paediatric | Dog | None
     deriving (Show)
 
-data OdmCalc = OdmCalc { datetime :: Time.LocalTime
+data OdmCalc = OdmCalc { datetime :: Double
                        , nomogram :: OdmNomogram
                        , co :: Float
                        , sv :: Int
@@ -73,7 +78,7 @@ nomogramParser =
 
 -- #yyyymmddhhmmss:
 -- $yyyymmddhhmmss.mmm:
-dateTimeParser :: Parser Time.LocalTime
+dateTimeParser :: Parser Double
 dateTimeParser = do
     year    <- count 4 digit
     month   <- count 2 digit
@@ -81,9 +86,10 @@ dateTimeParser = do
     hour    <- count 2 digit
     minute  <- count 2 digit
     seconds <- takeWhile1 $ inClass "0-9."
-    return Time.LocalTime { Time.localDay       = Time.fromGregorian (read year) (read month) (read day)
-                          , Time.localTimeOfDay = Time.TimeOfDay (read hour) (read minute) (read $ T.unpack seconds)
+    let utctime = UTCTime { utctDay     = fromGregorian  (read year) (read month) (read day)
+                          , utctDayTime = timeOfDayToTime $ TimeOfDay (read hour) (read minute) (read $ T.unpack seconds)
                           }
+    return $ (realToFrac.utcTimeToPOSIXSeconds) utctime
 
 parseOdmCalc :: Parser OdmCalc
 parseOdmCalc = do
@@ -118,16 +124,20 @@ parseOdmCalc = do
 parseOdmWave :: Parser [OdmWave]
 parseOdmWave = do
     char '$'
-    dateTimeParser
+    dt <- dateTimeParser
     char ':'
-    many1 $ do
+    dat <- many1 $ do
         char ','
-        flow <- decimal
+        velocity <- decimal
         char ';'
         pressure <- decimal
-        -- Bug makes odm spit out flow * 4
-        let flowcorr = quot flow 4
-        return (flowcorr, pressure)
+        -- Bug makes ODM spit out velocity * 4
+        let velcorr = quot velocity 4
+        return (velcorr, pressure)
+    let timedeltas = (+ dt) <$> (/ 180) <$> [0..]
+    return $ ziptd timedeltas (unzip dat)
+  where
+    ziptd d (v, p) = zip3 d v p
 
 calcParser :: (MonadIO m) => PP.Parser Text m (Maybe (Either PA.ParsingError OdmCalc))
 calcParser = PA.parse parseOdmCalc
@@ -144,21 +154,21 @@ main = do
     let devpath = args !! 0
     dorun devpath
   where
-    dorun dev = withSerial dev odmSerialSettings commonPipe
-    --dorun _ = SysIO.withFile "odmtest.csv" SysIO.ReadMode commonPipe
+    --dorun dev = withSerial dev odmSerialSettings pipeLine
+    dorun _ = SysIO.withFile "odmtest.csv" SysIO.ReadMode pipeLine
 
-commonPipe :: SysIO.Handle -> IO ()
-commonPipe hIn = do
+pipeLine :: SysIO.Handle -> IO ()
+pipeLine hIn = do
     (output1, input1) <- spawn unbounded
     (output2, input2) <- spawn unbounded
     a1 <- async $ do
         runEffect $ linesFromHandleForever hIn >-> toOutput (output1 <> output2)
         performGC
     a2 <- async $ do
-        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseWaveForever (fromInput input1) >-> waveToMsgPack >-> zmqWaveConsumer ctx
+        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseWaveForever (fromInput input1) >-> P.tee P.print >-> waveToMsgPack >-> zmqWaveConsumer ctx
         performGC
     a3 <- async $ do
-        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseNumForever (fromInput input2) >-> P.tee P.print >-> numToMsgPack >-> zmqNumConsumer ctx
+        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseNumForever (fromInput input2) >-> numToMsgPack >-> zmqNumConsumer ctx
         performGC
     mapM_ wait [a1, a2, a3]
 
@@ -181,30 +191,33 @@ parseWaveForever inflow = do
          Just e  -> case e of
                          -- Drop current line on parsing error and continue
                          Left _      -> parseWaveForever (p >-> P.drop 1)
-                         Right entry -> forM entry yield >> parseWaveForever p
+                         Right entry -> forM_ entry yield >> parseWaveForever p
 
 numToMsgPack :: (MonadIO m) => Pipe OdmCalc B.ByteString m ()
 numToMsgPack = P.map $ \odmdata ->
-    "odm " `B.append` (BL.toStrict . MsgPack.pack . preprocess $ odmdata)
+    "odm " `B.append` (BL.toStrict . M.pack . preprocess $ odmdata)
   where
-    preprocess odmval = MsgPack.Assoc [("co"   :: String, MsgPack.toObject $ co odmval),
-                                       ("sv"   :: String, MsgPack.toObject $ sv odmval),
-                                       ("hr"   :: String, MsgPack.toObject $ hr odmval),
-                                       ("md"   :: String, MsgPack.toObject $ md odmval),
-                                       ("sd"   :: String, MsgPack.toObject $ sd odmval),
-                                       ("ftc"  :: String, MsgPack.toObject $ ftc odmval),
-                                       ("fttp" :: String, MsgPack.toObject $ fttp odmval),
-                                       ("ma"   :: String, MsgPack.toObject $ ma odmval),
-                                       ("pv"   :: String, MsgPack.toObject $ pv odmval),
-                                       ("ci"   :: String, MsgPack.toObject $ ci odmval),
-                                       ("svi"  :: String, MsgPack.toObject $ svi odmval)]
+    preprocess OdmCalc{..} = M.Assoc [("co",   M.toObject co),
+                                      ("sv",   M.toObject sv ),
+                                      ("hr",   M.toObject hr),
+                                      ("md",   M.toObject md),
+                                      ("sd",   M.toObject sd),
+                                      ("ftc",  M.toObject ftc),
+                                      ("fttp", M.toObject fttp),
+                                      ("ma",   M.toObject ma),
+                                      ("pv",   M.toObject pv),
+                                      ("ci",   M.toObject ci),
+                                      ("svi",  M.toObject svi) :: (String, M.Object)]
 
 waveToMsgPack :: (MonadIO m) => Pipe OdmWave B.ByteString m ()
 waveToMsgPack = P.map $ \odmdata ->
-    "odm " `B.append` (BL.toStrict . MsgPack.pack . preprocess $ odmdata)
+    "odm " `B.append` (BL.toStrict . M.pack . preprocess $ odmdata)
   where
-    preprocess (u, p) = MsgPack.Assoc [("p" :: String, MsgPack.toObject p),
-                                       ("u" :: String, MsgPack.toObject u)]
+    preprocess (dt, u, p) = M.Assoc [("posixtime", M.toObject dt),
+                                     ("p", M.toObject p),
+                                     ("u", M.toObject u) :: (String, M.Object)]
+    timestamp :: (Real a) => a -> Double
+    timestamp = realToFrac
 
 -- ZMQ related
 zmqNumConsumer :: (PZ.Base m ~ IO, PZ.MonadSafe m) => Z.Context -> Consumer B.ByteString m ()
