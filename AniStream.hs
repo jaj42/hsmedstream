@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Main where
 
@@ -32,7 +33,7 @@ import Data.Attoparsec.Text
 import qualified Pipes.Parse as PP
 import qualified Pipes.Attoparsec as PA
 
-import qualified Data.MessagePack as MsgPack
+import qualified Data.MessagePack as M
 
 import qualified System.ZMQ4 as Z
 import qualified Pipes.ZMQ4 as PZ
@@ -124,11 +125,11 @@ dropInvalid = P.filter $ \anidata -> (valid anidata == True)
 
 toMsgPack :: (MonadIO m) => Pipe AniData B.ByteString m ()
 toMsgPack = P.map $ \anidata ->
-    "ani " `B.append` (BL.toStrict . MsgPack.pack . preprocess $ anidata)
+    "ani " `B.append` (BL.toStrict . M.pack . preprocess $ anidata)
   where
-    preprocess anival = MsgPack.Assoc [("instant" :: String, MsgPack.toObject $ instant anival),
-                                       ("mean" :: String,    MsgPack.toObject $ mean anival),
-                                       ("energy" :: String,  MsgPack.toObject $ energy anival)]
+    preprocess OdmCalc{..} = M.Assoc [("instant", M.toObject instant),
+                                      ("mean"   , M.toObject mean),
+                                      ("energy" , M.toObject energy) :: (String, M.Object)]
 
 -- IO related
 withSerial :: DevPath -> S.SerialPortSettings -> (SysIO.Handle -> IO a) -> IO a
