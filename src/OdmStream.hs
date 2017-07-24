@@ -17,7 +17,7 @@ import qualified System.Hardware.Serialport as S
 import Data.Monoid
 import Control.Lens
 import Control.Monad (forever, forM_)
-import Control.Applicative ((<|>))
+import Control.Applicative
 import Control.Concurrent.Async
 import qualified Control.Exception as Ex
 
@@ -87,14 +87,15 @@ dateTimeParser = do
     day     <- count 2 digit
     hour    <- count 2 digit
     minute  <- count 2 digit
-    seconds <- takeWhile1 $ inClass "0-9."
+    seconds <- rational
     let utctime = UTCTime { utctDay     = fromGregorian  (read year) (read month) (read day)
-                          , utctDayTime = timeOfDayToTime $ TimeOfDay (read hour) (read minute) (read $ T.unpack seconds)
+                          , utctDayTime = timeOfDayToTime $ TimeOfDay (read hour) (read minute) (fromRational seconds)
                           }
     return $ (realToFrac.utcTimeToPOSIXSeconds) utctime
 
 parseOdmCalc :: Parser OdmCalc
 parseOdmCalc = do
+    skipSpace
     char '#'
     dt <- dateTimeParser
     char ':'
@@ -125,10 +126,11 @@ parseOdmCalc = do
 
 parseOdmWave :: Parser [OdmWave]
 parseOdmWave = do
+    skipSpace
     char '$'
     dt <- dateTimeParser
     char ':'
-    dat <- many1 $ do
+    pudata <- many1 $ do
         char ','
         velocity <- decimal
         char ';'
@@ -137,9 +139,8 @@ parseOdmWave = do
         let velcorr = quot velocity 4
         return (velcorr, pressure)
     let timedeltas = (+ dt) . (/ 180) <$> [0..]
-    return $ ziptd timedeltas (unzip dat)
-  where
-    ziptd d (v, p) = zip3 d v p
+    let injecttime d (v, p) = zip3 d v p
+    return $ injecttime timedeltas (unzip pudata)
 
 calcParser :: (MonadIO m) => PP.Parser Text m (Maybe (Either PA.ParsingError OdmCalc))
 calcParser = PA.parse parseOdmCalc
@@ -157,7 +158,7 @@ main = do
     dorun devpath
   where
     dorun dev = withSerial dev odmSerialSettings pipeLine
-    --dorun _ = SysIO.withFile "odmtest.csv" SysIO.ReadMode pipeLine
+    --dorun _ = SysIO.withFile "../testdata/odmtest.csv" SysIO.ReadMode pipeLine
 
 pipeLine :: SysIO.Handle -> IO ()
 pipeLine hIn = do
@@ -215,11 +216,9 @@ waveToMsgPack :: (MonadIO m) => Pipe OdmWave B.ByteString m ()
 waveToMsgPack = P.map $ \odmdata ->
     "odm " `B.append` (BL.toStrict . M.pack . preprocess $ odmdata)
   where
-    preprocess (dt, u, p) = M.Assoc [("posixtime", M.toObject dt),
+    preprocess (dt, u, p) = M.Assoc [("epoch", M.toObject dt),
                                      ("p", M.toObject p),
                                      ("u", M.toObject u) :: (String, M.Object)]
-    timestamp :: (Real a) => a -> Double
-    timestamp = realToFrac
 
 -- ZMQ related
 zmqNumConsumer :: (PZ.Base m ~ IO, PZ.MonadSafe m) => Z.Context -> Consumer B.ByteString m ()
