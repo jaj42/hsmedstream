@@ -35,6 +35,8 @@ import qualified Pipes.Prelude as P
 import qualified Pipes.Text as PT
 import qualified Pipes.Text.IO as PT
 
+import Pipes.Group (concats)
+
 import Data.Attoparsec.Text
 import qualified Pipes.Parse as PP
 import qualified Pipes.Attoparsec as PA
@@ -233,7 +235,7 @@ withSerial dev settings = Ex.bracket (S.hOpenSerial dev settings) SysIO.hClose
 linesFromHandleForever :: (MonadIO m) => SysIO.Handle -> Producer Text m ()
 linesFromHandleForever h = lineByLine (forever go)
   where
-    lineByLine = view PT.unlines . view PT.lines
+    lineByLine = concats . view PT.lines
     go = liftIO (T.hGetChunk h) >>= process
     process txt | T.null txt = return ()
                 | otherwise  = yield txt
