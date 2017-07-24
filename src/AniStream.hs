@@ -82,9 +82,9 @@ parseAniData = do
     delimiter
     energy <- rational
     char '|'
-    event <- takeWhile (\c -> c /= '\n')
+    event <- takeWhile (/= '\n')
     skipSpace
-    let valid = if sqi == 1 || sqi == 0xAA then True else False
+    let valid = sqi == 1 || sqi == 0xAA
     return $ AniData dt valid instant mean energy (T.unpack event)
 
 pipeParser :: (MonadIO m) => PP.Parser Text m (Maybe (Either PA.ParsingError AniData))
@@ -121,13 +121,13 @@ parseForever inflow = do
                          Right entry -> yield entry >> parseForever p
 
 dropInvalid :: (MonadIO m) => Pipe AniData AniData m ()
-dropInvalid = P.filter $ \anidata -> (valid anidata == True)
+dropInvalid = P.filter $ \anidata -> valid anidata
 
 toMsgPack :: (MonadIO m) => Pipe AniData B.ByteString m ()
 toMsgPack = P.map $ \anidata ->
     "ani " `B.append` (BL.toStrict . M.pack . preprocess $ anidata)
   where
-    preprocess OdmCalc{..} = M.Assoc [("instant", M.toObject instant),
+    preprocess AniData{..} = M.Assoc [("instant", M.toObject instant),
                                       ("mean"   , M.toObject mean),
                                       ("energy" , M.toObject energy) :: (String, M.Object)]
 
