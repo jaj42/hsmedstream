@@ -19,7 +19,8 @@ import Control.Lens
 import Control.Monad (forever, forM_)
 import Control.Applicative
 import Control.Concurrent.Async
-import qualified Control.Exception as Ex
+import Control.Exception (bracket)
+import Control.Monad.Trans.Reader (ReaderT, runReaderT, ask)
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -47,6 +48,8 @@ import qualified System.ZMQ4 as Z
 import qualified Pipes.ZMQ4 as PZ
 import Data.List.NonEmpty (NonEmpty(..))
 
+type WithConfig = ReaderT SysIO.Handle
+
 type DevPath = String
 
 type Velocity = Int
@@ -56,7 +59,7 @@ type OdmWave = (Double, Velocity, Pressure)
 data OdmNomogram = Adult | Paediatric | Dog | None
     deriving (Show)
 
-data OdmCalc = OdmCalc { datetime :: Double
+data OdmCalc = OdmCalc { timestamp :: Double
                        , nomogram :: OdmNomogram
                        , co :: Float
                        , sv :: Int
@@ -87,9 +90,9 @@ dateTimeParser = do
     day     <- count 2 digit
     hour    <- count 2 digit
     minute  <- count 2 digit
-    seconds <- rational
+    seconds <- double
     let utctime = UTCTime { utctDay     = fromGregorian  (read year) (read month) (read day)
-                          , utctDayTime = timeOfDayToTime $ TimeOfDay (read hour) (read minute) (fromRational seconds)
+                          , utctDayTime = timeOfDayToTime $ TimeOfDay (read hour) (read minute) (realToFrac seconds)
                           }
     return $ (realToFrac.utcTimeToPOSIXSeconds) utctime
 
@@ -142,12 +145,6 @@ parseOdmWave = do
     let injecttime d (v, p) = zip3 d v p
     return $ injecttime timedeltas (unzip pudata)
 
-calcParser :: (MonadIO m) => PP.Parser Text m (Maybe (Either PA.ParsingError OdmCalc))
-calcParser = PA.parse parseOdmCalc
-
-waveParser :: (MonadIO m) => PP.Parser Text m (Maybe (Either PA.ParsingError [OdmWave]))
-waveParser = PA.parse parseOdmWave
-
 odmSerialSettings :: S.SerialPortSettings
 odmSerialSettings = S.SerialPortSettings S.CS57600 8 S.One S.NoParity S.NoFlowControl 1
 
@@ -157,28 +154,30 @@ main = do
     let devpath = args !! 0
     dorun devpath
   where
-    dorun dev = withSerial dev odmSerialSettings pipeLine
-    --dorun _ = SysIO.withFile "../testdata/odmtest.csv" SysIO.ReadMode pipeLine
+    dorun dev = withSerial dev odmSerialSettings $ runReaderT pipeLine
+    --dorun _ = SysIO.withFile "../testdata/odmtest.csv" SysIO.ReadMode $ runReaderT pipeLine
 
-pipeLine :: SysIO.Handle -> IO ()
-pipeLine hIn = do
-    (output1, input1) <- spawn unbounded
-    (output2, input2) <- spawn unbounded
-    a1 <- async $ do
-        runEffect $ linesFromHandleForever hIn >-> toOutput (output1 <> output2)
-        performGC
-    a2 <- async $ do
-        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseWaveForever (fromInput input1) >-> waveToMsgPack >-> zmqWaveConsumer ctx
-        performGC
-    a3 <- async $ do
-        Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseNumForever (fromInput input2) >-> P.tee P.print >-> numToMsgPack >-> zmqNumConsumer ctx
-        performGC
-    mapM_ wait [a1, a2, a3]
+pipeLine ::  WithConfig IO ()
+pipeLine = do
+    hIn <- ask
+    liftIO $ do
+        (output1, input1) <- spawn unbounded
+        (output2, input2) <- spawn unbounded
+        a1 <- async $ do
+            runEffect $ linesFromHandleForever hIn >-> toOutput (output1 <> output2)
+            performGC
+        a2 <- async $ do
+            Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseWaveForever (fromInput input1) >-> waveToMsgPack >-> zmqWaveConsumer ctx
+            performGC
+        a3 <- async $ do
+            Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseNumForever (fromInput input2) >-> P.tee P.print >-> numToMsgPack >-> zmqNumConsumer ctx
+            performGC
+        mapM_ wait [a1, a2, a3]
 
 -- Parsing related
 parseNumForever :: (MonadIO m) => Producer Text m () -> Producer OdmCalc m ()
 parseNumForever inflow = do
-    (r, p) <- lift $ PP.runStateT calcParser inflow
+    (r, p) <- lift $ PP.runStateT (PA.parse parseOdmCalc) inflow
     case r of
          Nothing -> return ()
          Just e  -> case e of
@@ -188,7 +187,7 @@ parseNumForever inflow = do
 
 parseWaveForever :: (MonadIO m) => Producer Text m () -> Producer OdmWave m ()
 parseWaveForever inflow = do
-    (r, p) <- lift $ PP.runStateT waveParser inflow
+    (r, p) <- lift $ PP.runStateT (PA.parse parseOdmWave) inflow
     case r of
          Nothing -> return ()
          Just e  -> case e of
@@ -229,12 +228,10 @@ zmqWaveConsumer ctx = P.map (:| []) >-> PZ.setupConsumer ctx Z.Pub (`Z.connect` 
 
 -- IO related
 withSerial :: DevPath -> S.SerialPortSettings -> (SysIO.Handle -> IO a) -> IO a
-withSerial dev settings = Ex.bracket (S.hOpenSerial dev settings) SysIO.hClose
+withSerial dev settings = bracket (S.hOpenSerial dev settings) SysIO.hClose
 
 linesFromHandleForever :: (MonadIO m) => SysIO.Handle -> Producer Text m ()
-linesFromHandleForever h = lineByLine (forever go)
+linesFromHandleForever h = lineByLine $ (forever go)
   where
     lineByLine = concats . view PT.lines
-    go = liftIO (T.hGetChunk h) >>= process
-    process txt | T.null txt = return ()
-                | otherwise  = yield txt
+    go = liftIO (T.hGetChunk h) >>= yield
