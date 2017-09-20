@@ -134,8 +134,8 @@ parseOdmWave = do
     return $ injecttime timedeltas (unzip pudata)
 
 parseEither :: Parser (Either OdmCalc [OdmWave])
-parseEither = skipSpace >>
-      (Left <$> parseOdmCalc)
+parseEither = skipSpace -- handle LF after CR
+  *>  (Left  <$> parseOdmCalc)
   <|> (Right <$> parseOdmWave)
 
 odmSerialSettings :: S.SerialPortSettings
