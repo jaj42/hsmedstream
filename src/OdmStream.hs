@@ -145,8 +145,8 @@ parseOdmWave = do
 
 parseEither :: Parser (Either OdmCalc [OdmWave])
 parseEither = skipSpace >>
-      (parseOdmWave >>= return.Right)
-  <|> (parseOdmCalc >>= return.Left)
+      (Left <$> parseOdmCalc)
+  <|> (Right <$> parseOdmWave)
 
 odmSerialSettings :: S.SerialPortSettings
 odmSerialSettings = S.SerialPortSettings S.CS57600 8 S.One S.NoParity S.NoFlowControl 1
@@ -180,7 +180,7 @@ consumeWave ctx = keepWave >-> P.concat >-> waveToMsgPack >-> zmqConsumer ctx "t
 pipeLine :: SysIO.Handle -> IO ()
 pipeLine hIn = Z.withContext $ \ctx
     -> PZ.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn)
-    >-> P.tee P.print >-> P.tee (consumeCalc ctx) >-> (consumeWave ctx)
+    >-> P.tee P.print >-> P.tee (consumeCalc ctx) >-> consumeWave ctx
 
 -- Parsing related
 parseForever :: (MonadIO m) => Producer Text m () -> Producer (Either OdmCalc [OdmWave]) m ()
