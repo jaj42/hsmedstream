@@ -1,8 +1,9 @@
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Main where
+
+import Common (linesFromHandleForever, withSerial, zmqConsumer, dropLog)
 
 import Prelude hiding (takeWhile)
 
@@ -52,28 +53,29 @@ data AniData = AniData { datetime :: Time.LocalTime
                        } deriving (Show)
 
 delimiter :: Parser ()
-delimiter = char '|' >> skipSpace
+delimiter = char '|' *> skipSpace
 
 --09/21/2016|15:08:27
 dateTimeParser :: Parser Time.LocalTime
 dateTimeParser = do
-    month <- decimal
+    month <- count 2 digit
     char '/'
-    day <- decimal
+    day <- count 2 digit
     char '/'
-    year <- decimal
+    year <- count 4 digit
     delimiter
-    hour <- decimal
+    hour <- count 2 digit
     char ':'
-    minute <- decimal
+    minute <- count 2 digit
     char ':'
     seconds <- count 2 digit
-    return Time.LocalTime { Time.localDay = Time.fromGregorian year month day
-                          , Time.localTimeOfDay = Time.TimeOfDay hour minute (read seconds)
+    return Time.LocalTime { Time.localDay = Time.fromGregorian (read year) (read month) (read day)
+                          , Time.localTimeOfDay = Time.TimeOfDay (read hour) (read minute) (read seconds)
                           }
 
 parseAniData :: Parser AniData
 parseAniData = do
+    skipSpace -- handle LF after CR
     dt <- dateTimeParser
     delimiter
     sqi <- hexadecimal :: Parser Int
@@ -84,8 +86,7 @@ parseAniData = do
     delimiter
     energy <- rational
     char '|'
-    event <- takeWhile (/= '\n')
-    skipSpace
+    event <- takeWhile (not.isEndOfLine)
     let valid = sqi == 1 || sqi == 0xAA
     return $ AniData dt valid instant mean energy (T.unpack event)
 
@@ -105,11 +106,10 @@ main = do
     --dorun _ = SysIO.withFile "anitest.csv" SysIO.ReadMode pipeline
 
 pipeline :: SysIO.Handle -> IO ()
-pipeline hIn = Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn)
-               >-> P.tee P.print >-> dropInvalid >-> toMsgPack >-> zmqConsumer ctx
-
--- ZMQ related
-zmqConsumer ctx = P.map (:| []) >-> PZ.setupConsumer ctx Z.Pub (`Z.connect` "tcp://127.0.0.1:4201")
+pipeline hIn = Z.withContext $ \ctx
+    -> PZ.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn)
+    >-> P.tee P.print >-> P.filter valid >-> toMsgPack
+    >-> zmqConsumer ctx "tcp://127.0.0.1:4201"
 
 -- Parsing related
 parseForever :: (MonadIO m) => Producer Text m () -> Producer AniData m ()
@@ -119,11 +119,8 @@ parseForever inflow = do
          Nothing -> return ()
          Just e  -> case e of
                          -- Drop current line on parsing error and continue
-                         Left _      -> parseForever (p >-> P.drop 1)
+                         Left err    -> parseForever (p >-> dropLog err)
                          Right entry -> yield entry >> parseForever p
-
-dropInvalid :: (MonadIO m) => Pipe AniData AniData m ()
-dropInvalid = P.filter $ \anidata -> valid anidata
 
 toMsgPack :: (MonadIO m) => Pipe AniData B.ByteString m ()
 toMsgPack = P.map $ \anidata ->
@@ -132,15 +129,3 @@ toMsgPack = P.map $ \anidata ->
     preprocess AniData{..} = M.Assoc [("instant", M.toObject instant),
                                       ("mean"   , M.toObject mean),
                                       ("energy" , M.toObject energy) :: (String, M.Object)]
-
--- IO related
-withSerial :: DevPath -> S.SerialPortSettings -> (SysIO.Handle -> IO a) -> IO a
-withSerial dev settings = Ex.bracket (S.hOpenSerial dev settings) SysIO.hClose
-
-linesFromHandleForever :: (MonadIO m) => SysIO.Handle -> Producer Text m ()
-linesFromHandleForever h = lineByLine (forever go)
-  where
-    lineByLine = concats . view PT.lines
-    go = liftIO (T.hGetChunk h) >>= process
-    process txt | T.null txt = return ()
-                | otherwise  = yield txt
