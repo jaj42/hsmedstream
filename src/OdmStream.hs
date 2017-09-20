@@ -4,7 +4,7 @@
 
 module Main where
 
-import Common (linesFromHandleForever, withSerial, zmqConsumer, dropLog)
+import Common (linesFromHandleForever, withSerial, zmqConsumer, dropLog, parseForever)
 
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime(..))
@@ -18,11 +18,8 @@ import qualified System.Hardware.Serialport as S
 
 import Data.Monoid
 import Control.Lens
-import Control.Monad (forever, forM_)
+import Control.Monad (forever)
 import Control.Applicative
-import Control.Concurrent.Async
-import Control.Exception (bracket)
-import Control.Monad.Trans.Reader (ReaderT, runReaderT, ask)
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -32,13 +29,10 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 
 import Pipes
-import Pipes.Concurrent
 import qualified Pipes.Prelude as P
 
 import qualified Pipes.Text as PT
 import qualified Pipes.Text.IO as PT
-
-import Pipes.Group (concats)
 
 import Data.Attoparsec.Text
 import qualified Pipes.Parse as PP
@@ -47,10 +41,6 @@ import qualified Pipes.Attoparsec as PA
 import qualified Data.MessagePack as M
 
 import qualified System.ZMQ4 as Z
-import qualified Pipes.ZMQ4 as PZ
-import Data.List.NonEmpty (NonEmpty(..))
-
-type DevPath = String
 
 type Velocity = Int
 type Pressure = Int
@@ -179,19 +169,8 @@ consumeWave ctx = keepWave >-> P.concat >-> waveToMsgPack >-> zmqConsumer ctx "t
 
 pipeLine :: SysIO.Handle -> IO ()
 pipeLine hIn = Z.withContext $ \ctx
-    -> PZ.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn)
+    -> PT.runSafeT . runEffect $ parseForever parseEither (linesFromHandleForever hIn)
     >-> P.tee P.print >-> P.tee (consumeCalc ctx) >-> consumeWave ctx
-
--- Parsing related
-parseForever :: (MonadIO m) => Producer Text m () -> Producer (Either OdmCalc [OdmWave]) m ()
-parseForever inflow = do
-    (r, p) <- lift $ PP.runStateT (PA.parse parseEither) inflow
-    case r of
-         Nothing -> return ()
-         Just e  -> case e of
-                         -- Drop current line on parsing error and continue
-                         Left err    -> parseForever (p >-> dropLog err)
-                         Right entry -> yield entry >> parseForever p
 
 numToMsgPack :: (MonadIO m) => Pipe OdmCalc B.ByteString m ()
 numToMsgPack = P.map $ \odmdata ->
@@ -216,10 +195,3 @@ waveToMsgPack = P.map $ \odmdata ->
     preprocess (dt, u, p) = M.Assoc [("epoch", M.toObject dt),
                                      ("p", M.toObject p),
                                      ("u", M.toObject u) :: (String, M.Object)]
-
--- ZMQ related
-zmqNumConsumer :: (PZ.Base m ~ IO, PZ.MonadSafe m) => Z.Context -> Consumer B.ByteString m ()
-zmqNumConsumer ctx = P.map (:| []) >-> PZ.setupConsumer ctx Z.Pub (`Z.connect` "tcp://127.0.0.1:4201")
-
-zmqWaveConsumer :: (PZ.Base m ~ IO, PZ.MonadSafe m) => Z.Context -> Consumer B.ByteString m ()
-zmqWaveConsumer ctx = P.map (:| []) >-> PZ.setupConsumer ctx Z.Pub (`Z.connect` "tcp://127.0.0.1:4202")

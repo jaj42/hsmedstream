@@ -3,7 +3,7 @@
 
 module Main where
 
-import Common (linesFromHandleForever, withSerial, zmqConsumer, dropLog)
+import Common (linesFromHandleForever, withSerial, zmqConsumer, dropLog, parseForever)
 
 import Prelude hiding (takeWhile)
 
@@ -13,9 +13,7 @@ import System.Environment (getArgs)
 
 import qualified System.Hardware.Serialport as S
 
-import Control.Lens
 import Control.Monad (forever)
-import qualified Control.Exception as Ex
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -30,8 +28,6 @@ import qualified Pipes.Prelude as P
 import qualified Pipes.Text as PT
 import qualified Pipes.Text.IO as PT
 
-import Pipes.Group (concats)
-
 import Data.Attoparsec.Text
 import qualified Pipes.Parse as PP
 import qualified Pipes.Attoparsec as PA
@@ -39,8 +35,6 @@ import qualified Pipes.Attoparsec as PA
 import qualified Data.MessagePack as M
 
 import qualified System.ZMQ4 as Z
-import qualified Pipes.ZMQ4 as PZ
-import Data.List.NonEmpty (NonEmpty(..))
 
 type DevPath = String
 
@@ -90,9 +84,6 @@ parseAniData = do
     let valid = sqi == 1 || sqi == 0xAA
     return $ AniData dt valid instant mean energy (T.unpack event)
 
-pipeParser :: (MonadIO m) => PP.Parser Text m (Maybe (Either PA.ParsingError AniData))
-pipeParser = PA.parse parseAniData
-
 aniSerialSettings :: S.SerialPortSettings
 aniSerialSettings = S.SerialPortSettings S.CS9600 8 S.One S.NoParity S.NoFlowControl 1
 
@@ -107,20 +98,9 @@ main = do
 
 pipeline :: SysIO.Handle -> IO ()
 pipeline hIn = Z.withContext $ \ctx
-    -> PZ.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn)
+    -> PT.runSafeT . runEffect $ parseForever parseAniData (linesFromHandleForever hIn)
     >-> P.tee P.print >-> P.filter valid >-> toMsgPack
     >-> zmqConsumer ctx "tcp://127.0.0.1:4201"
-
--- Parsing related
-parseForever :: (MonadIO m) => Producer Text m () -> Producer AniData m ()
-parseForever inflow = do 
-    (r, p) <- lift $ PP.runStateT pipeParser inflow
-    case r of
-         Nothing -> return ()
-         Just e  -> case e of
-                         -- Drop current line on parsing error and continue
-                         Left err    -> parseForever (p >-> dropLog err)
-                         Right entry -> yield entry >> parseForever p
 
 toMsgPack :: (MonadIO m) => Pipe AniData B.ByteString m ()
 toMsgPack = P.map $ \anidata ->

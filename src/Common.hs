@@ -21,8 +21,6 @@ import qualified Pipes.Prelude as P
 import qualified Pipes.Text as PT
 import qualified Pipes.Text.IO as PT
 
-import Pipes.Group (concats)
-
 import Data.Attoparsec.Text
 import qualified Pipes.Parse as PP
 import qualified Pipes.Attoparsec as PA
@@ -49,4 +47,15 @@ zmqConsumer ctx dest = P.map (:| []) >-> PZ.setupConsumer ctx Z.Pub (`Z.connect`
 dropLog :: (Show a, MonadIO m) => PA.ParsingError -> Pipe a a m ()
 dropLog errmsg = await >>= liftIO.printErr errmsg >> cat
   where
-    printErr e s = putStr ((show e) ++ ": ") >> print s
+    printErr e s = SysIO.hPutStrLn SysIO.stderr (show e ++ ": " ++ show s)
+
+
+parseForever :: (MonadIO m) => Parser a -> Producer Text m () -> Producer a m ()
+parseForever parser inflow = do
+    (result, rem) <- lift $ PP.runStateT (PA.parse parser) inflow
+    case result of
+         Nothing -> return ()
+         Just e  -> case e of
+                         -- Drop current line on parsing error and continue
+                         Left err    -> parseForever parser (rem >-> dropLog err)
+                         Right entry -> yield entry >> parseForever parser rem
