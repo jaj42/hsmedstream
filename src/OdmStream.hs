@@ -4,6 +4,8 @@
 
 module Main where
 
+import Common (linesFromHandleForever, withSerial, zmqConsumer, dropLog)
+
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime(..))
 import Data.Time.LocalTime (TimeOfDay(..), timeOfDayToTime)
@@ -47,8 +49,6 @@ import qualified Data.MessagePack as M
 import qualified System.ZMQ4 as Z
 import qualified Pipes.ZMQ4 as PZ
 import Data.List.NonEmpty (NonEmpty(..))
-
-type WithConfig = ReaderT SysIO.Handle
 
 type DevPath = String
 
@@ -98,7 +98,6 @@ dateTimeParser = do
 
 parseOdmCalc :: Parser OdmCalc
 parseOdmCalc = do
-    skipSpace
     char '#'
     dt <- dateTimeParser
     char ':'
@@ -129,7 +128,6 @@ parseOdmCalc = do
 
 parseOdmWave :: Parser [OdmWave]
 parseOdmWave = do
-    skipSpace
     char '$'
     dt <- dateTimeParser
     char ':'
@@ -145,6 +143,11 @@ parseOdmWave = do
     let injecttime d (v, p) = zip3 d v p
     return $ injecttime timedeltas (unzip pudata)
 
+parseEither :: Parser (Either OdmCalc [OdmWave])
+parseEither = skipSpace >>
+      (parseOdmWave >>= return.Right)
+  <|> (parseOdmCalc >>= return.Left)
+
 odmSerialSettings :: S.SerialPortSettings
 odmSerialSettings = S.SerialPortSettings S.CS57600 8 S.One S.NoParity S.NoFlowControl 1
 
@@ -154,46 +157,41 @@ main = do
     let devpath = args !! 0
     dorun devpath
   where
-    dorun dev = withSerial dev odmSerialSettings $ runReaderT pipeLine
+    dorun dev = withSerial dev odmSerialSettings pipeLine
     --dorun _ = SysIO.withFile "../testdata/odmtest.csv" SysIO.ReadMode $ runReaderT pipeLine
 
-pipeLine ::  WithConfig IO ()
-pipeLine = do
-    hIn <- ask
-    liftIO $ do
-        (output1, input1) <- spawn unbounded
-        (output2, input2) <- spawn unbounded
-        a1 <- async $ do
-            runEffect $ linesFromHandleForever hIn >-> toOutput (output1 <> output2)
-            performGC
-        a2 <- async $ do
-            Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseWaveForever (fromInput input1) >-> waveToMsgPack >-> zmqWaveConsumer ctx
-            performGC
-        a3 <- async $ do
-            Z.withContext $ \ctx -> PZ.runSafeT . runEffect $ parseNumForever (fromInput input2) >-> P.tee P.print >-> numToMsgPack >-> zmqNumConsumer ctx
-            performGC
-        mapM_ wait [a1, a2, a3]
+keepCalc :: (MonadIO m) => Pipe (Either OdmCalc [OdmWave]) OdmCalc m ()
+keepCalc = forever $ do
+    v <- await
+    case v of
+        Right _ -> return ()
+        Left c  -> yield c
+
+keepWave :: (MonadIO m) => Pipe (Either OdmCalc [OdmWave]) [OdmWave] m ()
+keepWave = forever $ do
+    v <- await
+    case v of
+        Right c -> yield c
+        Left _  -> return ()
+
+consumeCalc ctx = keepCalc >-> numToMsgPack >-> zmqConsumer ctx "tcp://127.0.0.1:4201"
+consumeWave ctx = keepWave >-> P.concat >-> waveToMsgPack >-> zmqConsumer ctx "tcp://127.0.0.1:4202"
+
+pipeLine :: SysIO.Handle -> IO ()
+pipeLine hIn = Z.withContext $ \ctx
+    -> PZ.runSafeT . runEffect $ parseForever (linesFromHandleForever hIn)
+    >-> P.tee P.print >-> P.tee (consumeCalc ctx) >-> (consumeWave ctx)
 
 -- Parsing related
-parseNumForever :: (MonadIO m) => Producer Text m () -> Producer OdmCalc m ()
-parseNumForever inflow = do
-    (r, p) <- lift $ PP.runStateT (PA.parse parseOdmCalc) inflow
+parseForever :: (MonadIO m) => Producer Text m () -> Producer (Either OdmCalc [OdmWave]) m ()
+parseForever inflow = do
+    (r, p) <- lift $ PP.runStateT (PA.parse parseEither) inflow
     case r of
          Nothing -> return ()
          Just e  -> case e of
                          -- Drop current line on parsing error and continue
-                         Left _      -> parseNumForever (p >-> P.drop 1)
-                         Right entry -> yield entry >> parseNumForever p
-
-parseWaveForever :: (MonadIO m) => Producer Text m () -> Producer OdmWave m ()
-parseWaveForever inflow = do
-    (r, p) <- lift $ PP.runStateT (PA.parse parseOdmWave) inflow
-    case r of
-         Nothing -> return ()
-         Just e  -> case e of
-                         -- Drop current line on parsing error and continue
-                         Left _      -> parseWaveForever (p >-> P.drop 1)
-                         Right entry -> forM_ entry yield >> parseWaveForever p
+                         Left err    -> parseForever (p >-> dropLog err)
+                         Right entry -> yield entry >> parseForever p
 
 numToMsgPack :: (MonadIO m) => Pipe OdmCalc B.ByteString m ()
 numToMsgPack = P.map $ \odmdata ->
@@ -225,13 +223,3 @@ zmqNumConsumer ctx = P.map (:| []) >-> PZ.setupConsumer ctx Z.Pub (`Z.connect` "
 
 zmqWaveConsumer :: (PZ.Base m ~ IO, PZ.MonadSafe m) => Z.Context -> Consumer B.ByteString m ()
 zmqWaveConsumer ctx = P.map (:| []) >-> PZ.setupConsumer ctx Z.Pub (`Z.connect` "tcp://127.0.0.1:4202")
-
--- IO related
-withSerial :: DevPath -> S.SerialPortSettings -> (SysIO.Handle -> IO a) -> IO a
-withSerial dev settings = bracket (S.hOpenSerial dev settings) SysIO.hClose
-
-linesFromHandleForever :: (MonadIO m) => SysIO.Handle -> Producer Text m ()
-linesFromHandleForever h = lineByLine $ (forever go)
-  where
-    lineByLine = concats . view PT.lines
-    go = liftIO (T.hGetChunk h) >>= yield

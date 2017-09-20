@@ -39,7 +39,6 @@ withSerial dev settings = Ex.bracket (S.hOpenSerial dev settings) SysIO.hClose
 linesFromHandleForever :: (MonadIO m) => SysIO.Handle -> Producer Text m ()
 linesFromHandleForever h = lineByLine (forever go)
   where
-    --lineByLine = concats . view PT.lines
     lineByLine = view PT.unlines . view PT.lines
     go = liftIO (T.hGetChunk h) >>= yield
 
