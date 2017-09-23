@@ -18,11 +18,9 @@ import qualified System.Hardware.Serialport as S
 
 import Data.Monoid
 import Control.Lens
-import Control.Monad (forever, forM_)
+import Control.Monad (forever)
 import Control.Applicative
-import Control.Concurrent.Async
 import Control.Exception (bracket)
-import Control.Monad.Trans.Reader (ReaderT, runReaderT, ask)
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -32,13 +30,10 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 
 import Pipes
-import Pipes.Concurrent
 import qualified Pipes.Prelude as P
 
 import qualified Pipes.Text as PT
 import qualified Pipes.Text.IO as PT
-
-import Pipes.Group (concats)
 
 import Data.Attoparsec.Text
 import qualified Pipes.Parse as PP

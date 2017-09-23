@@ -21,8 +21,6 @@ import qualified Pipes.Prelude as P
 import qualified Pipes.Text as PT
 import qualified Pipes.Text.IO as PT
 
-import Pipes.Group (concats)
-
 import Data.Attoparsec.Text
 import qualified Pipes.Parse as PP
 import qualified Pipes.Attoparsec as PA
