@@ -135,7 +135,7 @@ parseOdmWave = do
 
 parseEither :: Parser (Either OdmCalc [OdmWave])
 parseEither = skipSpace -- handle LF after CR
-  *>  (Left  <$> parseOdmCalc)
+  >>  (Left  <$> parseOdmCalc)
   <|> (Right <$> parseOdmWave)
 
 odmSerialSettings :: S.SerialPortSettings
