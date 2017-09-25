@@ -3,31 +3,23 @@
 
 module Main where
 
-import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever)
+import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever, encodeToMsgPack)
 
 import Prelude hiding (takeWhile)
 
-import qualified Data.Time as Time
 import qualified System.IO as SysIO
-import System.Environment (getArgs)
-
+import           System.Environment (getArgs)
+import qualified System.ZMQ4 as Z
 import qualified System.Hardware.Serialport as S
 
+import qualified Data.Time as Time
 import qualified Data.Text as T
-
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as BL
-
-import Pipes
-import qualified Pipes.Prelude as P
-
-import qualified Pipes.Text.IO as PT
-
-import Data.Attoparsec.Text
-
+import           Data.Attoparsec.Text
 import qualified Data.MessagePack as M
 
-import qualified System.ZMQ4 as Z
+import           Pipes
+import qualified Pipes.Prelude as P
+import qualified Pipes.Text.IO as PT
 
 type DevPath = String
 
@@ -92,13 +84,10 @@ main = do
 pipeline :: SysIO.Handle -> IO ()
 pipeline hIn = Z.withContext $ \ctx
     -> PT.runSafeT . runEffect $ parseForever parseAniData (linesFromHandleForever hIn)
-    >-> P.tee P.print >-> P.filter valid >-> toMsgPack
+    >-> P.tee P.print >-> P.filter valid >-> encodeToMsgPack "ani" aniMsgPack
     >-> zmqConsumer ctx "tcp://127.0.0.1:4201"
 
-toMsgPack :: (MonadIO m) => Pipe AniData B.ByteString m ()
-toMsgPack = P.map $ \anidata ->
-    "ani " `B.append` (BL.toStrict . M.pack . preprocess $ anidata)
-  where
-    preprocess AniData{..} = M.Assoc [("instant", M.toObject instant),
-                                      ("mean"   , M.toObject mean),
-                                      ("energy" , M.toObject energy) :: (String, M.Object)]
+aniMsgPack :: AniData -> M.Assoc [(String, M.Object)]
+aniMsgPack AniData{..} = M.Assoc [("instant", M.toObject instant),
+                                  ("mean"   , M.toObject mean),
+                                  ("energy" , M.toObject energy)]

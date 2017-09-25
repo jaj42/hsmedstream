@@ -3,28 +3,28 @@
 module Common where
 
 import qualified System.IO as SysIO
-
 import qualified System.Hardware.Serialport as S
+import qualified System.ZMQ4 as Z
 
-import Control.Lens
-import Control.Monad (forever)
+import           Control.Lens
+import           Control.Monad (forever)
 import qualified Control.Exception as Ex
 
-import Data.Text (Text)
+import           Data.Text (Text)
 import qualified Data.Text.IO as T
+import           Data.Attoparsec.Text
+import           Data.List.NonEmpty (NonEmpty(..))
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Lazy as BL
 
-import Pipes
+import           Pipes
 import qualified Pipes.Prelude as P
-
 import qualified Pipes.Text as PT
-
-import Data.Attoparsec.Text
 import qualified Pipes.Parse as PP
 import qualified Pipes.Attoparsec as PA
-
-import qualified System.ZMQ4 as Z
 import qualified Pipes.ZMQ4 as PZ
-import Data.List.NonEmpty (NonEmpty(..))
+
+import qualified Data.MessagePack as M
 
 type DevPath = String
 
@@ -56,3 +56,7 @@ parseForever parser inflow = do
                          -- Drop current line on parsing error and continue
                          Left err    -> parseForever parser (remainder >-> dropLog err)
                          Right entry -> yield entry >> parseForever parser remainder
+
+encodeToMsgPack :: (MonadIO m, M.MessagePack b) => B.ByteString -> (a -> b) -> Pipe a B.ByteString m ()
+encodeToMsgPack prefix preprocess = P.map $ \dat
+    -> prefix `B.append` (BL.toStrict . M.pack . preprocess $ dat)

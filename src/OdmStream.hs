@@ -4,7 +4,7 @@
 
 module Main where
 
-import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever)
+import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever, encodeToMsgPack)
 
 import qualified System.IO as SysIO
 import           System.Environment (getArgs)
@@ -13,9 +13,6 @@ import qualified System.ZMQ4 as Z
 
 import           Control.Monad (forever)
 import           Control.Applicative
-
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as BL
 
 import           Data.Attoparsec.Text
 import qualified Data.MessagePack as M
@@ -151,34 +148,29 @@ keepWave = forever $ do
         Right c -> yield c
         Left _  -> return ()
 
-consumeCalc ctx = keepCalc >-> numToMsgPack >-> zmqConsumer ctx "tcp://127.0.0.1:4201"
-consumeWave ctx = keepWave >-> P.concat >-> waveToMsgPack >-> zmqConsumer ctx "tcp://127.0.0.1:4202"
-
 pipeLine :: SysIO.Handle -> IO ()
 pipeLine hIn = Z.withContext $ \ctx
     -> PT.runSafeT . runEffect $ parseForever parseEither (linesFromHandleForever hIn)
     >-> P.tee P.print >-> P.tee (consumeCalc ctx) >-> consumeWave ctx
-
-numToMsgPack :: (MonadIO m) => Pipe OdmCalc B.ByteString m ()
-numToMsgPack = P.map $ \odmdata ->
-    "odm " `B.append` (BL.toStrict . M.pack . preprocess $ odmdata)
   where
-    preprocess OdmCalc{..} = M.Assoc [("co",   M.toObject co),
-                                      ("sv",   M.toObject sv ),
-                                      ("hr",   M.toObject hr),
-                                      ("md",   M.toObject md),
-                                      ("sd",   M.toObject sd),
-                                      ("ftc",  M.toObject ftc),
-                                      ("fttp", M.toObject fttp),
-                                      ("ma",   M.toObject ma),
-                                      ("pv",   M.toObject pv),
-                                      ("ci",   M.toObject ci),
-                                      ("svi",  M.toObject svi) :: (String, M.Object)]
+    odmEncodeWith = encodeToMsgPack "odm"
+    consumeCalc ctx = keepCalc >-> odmEncodeWith calcMsgPack >-> zmqConsumer ctx "tcp://127.0.0.1:4201"
+    consumeWave ctx = keepWave >-> P.concat >-> odmEncodeWith waveMsgPack >-> zmqConsumer ctx "tcp://127.0.0.1:4202"
 
-waveToMsgPack :: (MonadIO m) => Pipe OdmWave B.ByteString m ()
-waveToMsgPack = P.map $ \odmdata ->
-    "odm " `B.append` (BL.toStrict . M.pack . preprocess $ odmdata)
-  where
-    preprocess (dt, u, p) = M.Assoc [("epoch", M.toObject dt),
-                                     ("p", M.toObject p),
-                                     ("u", M.toObject u) :: (String, M.Object)]
+calcMsgPack :: OdmCalc -> M.Assoc [(String, M.Object)]
+calcMsgPack OdmCalc{..} = M.Assoc [("co",   M.toObject co),
+                                  ("sv",   M.toObject sv ),
+                                  ("hr",   M.toObject hr),
+                                  ("md",   M.toObject md),
+                                  ("sd",   M.toObject sd),
+                                  ("ftc",  M.toObject ftc),
+                                  ("fttp", M.toObject fttp),
+                                  ("ma",   M.toObject ma),
+                                  ("pv",   M.toObject pv),
+                                  ("ci",   M.toObject ci),
+                                  ("svi",  M.toObject svi)]
+
+waveMsgPack :: OdmWave -> M.Assoc [(String, M.Object)]
+waveMsgPack (dt, u, p) = M.Assoc [("epoch", M.toObject dt),
+                                 ("p", M.toObject p),
+                                 ("u", M.toObject u)]
