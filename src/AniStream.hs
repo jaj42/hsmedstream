@@ -3,7 +3,7 @@
 
 module Main where
 
-import Common (linesFromHandleForever, withSerial, zmqConsumer, dropLog, parseForever)
+import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever)
 
 import Prelude hiding (takeWhile)
 
@@ -13,11 +13,7 @@ import System.Environment (getArgs)
 
 import qualified System.Hardware.Serialport as S
 
-import Control.Monad (forever)
-
-import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.IO as T
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
@@ -25,12 +21,9 @@ import qualified Data.ByteString.Lazy as BL
 import Pipes
 import qualified Pipes.Prelude as P
 
-import qualified Pipes.Text as PT
 import qualified Pipes.Text.IO as PT
 
 import Data.Attoparsec.Text
-import qualified Pipes.Parse as PP
-import qualified Pipes.Attoparsec as PA
 
 import qualified Data.MessagePack as M
 

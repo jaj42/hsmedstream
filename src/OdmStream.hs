@@ -4,43 +4,30 @@
 
 module Main where
 
-import Common (linesFromHandleForever, withSerial, zmqConsumer, dropLog, parseForever)
-
-import Data.Time.Calendar (fromGregorian)
-import Data.Time.Clock (UTCTime(..))
-import Data.Time.LocalTime (TimeOfDay(..), timeOfDayToTime)
-import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever)
 
 import qualified System.IO as SysIO
-import System.Environment (getArgs)
-
+import           System.Environment (getArgs)
 import qualified System.Hardware.Serialport as S
+import qualified System.ZMQ4 as Z
 
-import Data.Monoid
-import Control.Lens
-import Control.Monad (forever)
-import Control.Applicative
-
-import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
+import           Control.Monad (forever)
+import           Control.Applicative
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 
-import Pipes
-import qualified Pipes.Prelude as P
-
-import qualified Pipes.Text as PT
-import qualified Pipes.Text.IO as PT
-
-import Data.Attoparsec.Text
-import qualified Pipes.Parse as PP
-import qualified Pipes.Attoparsec as PA
-
+import           Data.Attoparsec.Text
 import qualified Data.MessagePack as M
 
-import qualified System.ZMQ4 as Z
+import           Data.Time.Calendar (fromGregorian)
+import           Data.Time.Clock (UTCTime(..))
+import           Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import           Data.Time.LocalTime (TimeOfDay(..), timeOfDayToTime)
+
+import           Pipes
+import qualified Pipes.Prelude as P
+import qualified Pipes.Text.IO as PT
 
 type Velocity = Int
 type Pressure = Int

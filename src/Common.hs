@@ -3,7 +3,6 @@
 module Common where
 
 import qualified System.IO as SysIO
-import System.Environment (getArgs)
 
 import qualified System.Hardware.Serialport as S
 
@@ -12,14 +11,12 @@ import Control.Monad (forever)
 import qualified Control.Exception as Ex
 
 import Data.Text (Text)
-import qualified Data.Text as T
 import qualified Data.Text.IO as T
 
 import Pipes
 import qualified Pipes.Prelude as P
 
 import qualified Pipes.Text as PT
-import qualified Pipes.Text.IO as PT
 
 import Data.Attoparsec.Text
 import qualified Pipes.Parse as PP
@@ -52,10 +49,10 @@ dropLog errmsg = await >>= liftIO.printErr errmsg >> cat
 
 parseForever :: (MonadIO m) => Parser a -> Producer Text m () -> Producer a m ()
 parseForever parser inflow = do
-    (result, rem) <- lift $ PP.runStateT (PA.parse parser) inflow
+    (result, remainder) <- lift $ PP.runStateT (PA.parse parser) inflow
     case result of
          Nothing -> return ()
          Just e  -> case e of
                          -- Drop current line on parsing error and continue
-                         Left err    -> parseForever parser (rem >-> dropLog err)
-                         Right entry -> yield entry >> parseForever parser rem
+                         Left err    -> parseForever parser (remainder >-> dropLog err)
+                         Right entry -> yield entry >> parseForever parser remainder
