@@ -159,18 +159,18 @@ pipeLine hIn = Z.withContext $ \ctx
 
 calcMsgPack :: OdmCalc -> M.Assoc [(String, M.Object)]
 calcMsgPack OdmCalc{..} = M.Assoc [("co",   M.toObject co),
-                                  ("sv",   M.toObject sv ),
-                                  ("hr",   M.toObject hr),
-                                  ("md",   M.toObject md),
-                                  ("sd",   M.toObject sd),
-                                  ("ftc",  M.toObject ftc),
-                                  ("fttp", M.toObject fttp),
-                                  ("ma",   M.toObject ma),
-                                  ("pv",   M.toObject pv),
-                                  ("ci",   M.toObject ci),
-                                  ("svi",  M.toObject svi)]
+                                   ("sv",   M.toObject sv),
+                                   ("hr",   M.toObject hr),
+                                   ("md",   M.toObject md),
+                                   ("sd",   M.toObject sd),
+                                   ("ftc",  M.toObject ftc),
+                                   ("fttp", M.toObject fttp),
+                                   ("ma",   M.toObject ma),
+                                   ("pv",   M.toObject pv),
+                                   ("ci",   M.toObject ci),
+                                   ("svi",  M.toObject svi)]
 
 waveMsgPack :: OdmWave -> M.Assoc [(String, M.Object)]
-waveMsgPack (dt, u, p) = M.Assoc [("epoch", M.toObject dt),
-                                 ("p", M.toObject p),
-                                 ("u", M.toObject u)]
+waveMsgPack (dt, u, p) = M.Assoc [("dt", M.toObject dt),
+                                  ("p", M.toObject p),
+                                  ("u", M.toObject u)]
