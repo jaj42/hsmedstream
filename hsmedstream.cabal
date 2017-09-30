@@ -23,7 +23,7 @@ executable anistream
                          pipes-text, pipes-zeromq4
     hs-source-dirs:      src
     default-language:    Haskell2010
-    ghc-options: -W
+    ghc-options:         -W
 
 executable odmstream
     main-is:             OdmStream.hs
@@ -36,4 +36,13 @@ executable odmstream
                          pipes-text, pipes-zeromq4
     hs-source-dirs:      src
     default-language:    Haskell2010
-    ghc-options: -W
+    ghc-options:         -W
+
+executable proxy
+    main-is:             Proxy.hs
+    -- other-modules:
+    -- other-extensions:
+    build-depends:       base, zeromq4-haskell
+    hs-source-dirs:      src
+    default-language:    Haskell2010
+    ghc-options:         -W -threaded
