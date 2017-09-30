@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GADTs, OverloadedStrings #-}
 
 module Common where
 
@@ -59,4 +59,4 @@ parseForever parser inflow = do
 
 encodeToMsgPack :: (MonadIO m, M.MessagePack b) => B.ByteString -> (a -> b) -> Pipe a B.ByteString m ()
 encodeToMsgPack prefix preprocess = P.map $ \dat
-    -> prefix `B.append` (BL.toStrict . M.pack . preprocess $ dat)
+    -> foldl B.append B.empty [prefix, " ", BL.toStrict . M.pack . preprocess $ dat]
