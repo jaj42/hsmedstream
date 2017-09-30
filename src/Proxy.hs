@@ -10,6 +10,7 @@ main = do
     forkIO $ newProxy "tcp://0.0.0.0:4201" "tcp://0.0.0.0:4211"
     -- Waveforms
     forkIO $ newProxy "tcp://0.0.0.0:4202" "tcp://0.0.0.0:4212"
+    -- This way we can exit with Ctrl-C
     forever $ threadDelay 1000000
 
 newProxy :: String -> String -> IO ()
