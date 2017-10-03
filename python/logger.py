@@ -24,7 +24,7 @@ class Logger(Thread):
         self.socket = context.socket(zmq.SUB)
         self.socket.setsockopt(zmq.SUBSCRIBE, b'')
         self.socket.RCVTIMEO = 1000 # in milliseconds
-        self.socket.bind("tcp://*:{}".format(logtype.value))
+        self.socket.connect("tcp://127.0.0.1:{}".format(logtype.value))
 
     def __del__(self):
         self.filehandle.close()
