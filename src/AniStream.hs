@@ -73,7 +73,7 @@ aniSerialSettings = S.SerialPortSettings S.CS9600 8 S.One S.NoParity S.NoFlowCon
 
 main :: IO ()
 main = do
-    config <- getConfigFor "ANI"
+    config <- getConfigFor "ani"
     case "device" `HM.lookup` config of
          Just devpath -> withSerial devpath aniSerialSettings pipeline
          Nothing      -> ioError $ userError "No COM device defined"

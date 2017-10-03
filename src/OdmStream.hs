@@ -1,6 +1,4 @@
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE GADTs, OverloadedStrings, RecordWildCards #-}
 
 module Main where
 
@@ -127,7 +125,7 @@ odmSerialSettings = S.SerialPortSettings S.CS57600 8 S.One S.NoParity S.NoFlowCo
 
 main :: IO ()
 main = do
-    config <- getConfigFor "ODM"
+    config <- getConfigFor "odm"
     case "device" `HM.lookup` config of
          Just devpath -> withSerial devpath odmSerialSettings pipeline
          Nothing      -> ioError $ userError "No COM device defined"

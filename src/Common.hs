@@ -72,7 +72,15 @@ getConfigFor section = do
     let result = do
             -- Working in Either
             cp <- mcp
-            CF.items cp section
+            let local = sectionToHM cp section
+            let common = sectionToHM cp "common"
+            return $ HM.union local common
     case result of
-         Left e -> error (show e)
-         Right r -> return $ HM.fromList r
+         Left _  -> return HM.empty
+         Right r -> return r
+  where
+    sectionToHM configparser sectionname =
+        let i = CF.items configparser sectionname
+        in case i of
+                Left _  -> HM.empty
+                Right r -> HM.fromList r
