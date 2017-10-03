@@ -66,8 +66,8 @@ encodeToMsgPack prefix preprocess = P.map $ \dat
 
 getConfigFor :: CF.SectionSpec -> IO (HM.Map String String)
 getConfigFor section = do
-    home <- D.getHomeDirectory
-    cfgfile <- D.canonicalizePath (home ++ "/.hsmedstream")
+    configdir <- D.getXdgDirectory D.XdgConfig "phystream"
+    cfgfile <- D.canonicalizePath (configdir ++ "/config.ini")
     mcp <- CF.readfile CF.emptyCP cfgfile
     let result = do
             -- Working in Either

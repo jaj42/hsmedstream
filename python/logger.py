@@ -9,8 +9,8 @@ import msgpack
 import zmq
 
 class LogType(Enum):
-    NUMERICS = 4201
-    WAVE     = 4202
+    NUMERICS = 4211
+    WAVE     = 4212
 
 class Logger(Thread):
     def __init__(self, context, logtype, termevent):
