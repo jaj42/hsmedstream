@@ -20,7 +20,8 @@ executable anistream
                          bytestring, text,
                          time, attoparsec, data-msgpack,
                          pipes, pipes-attoparsec, pipes-parse,
-                         pipes-text, pipes-zeromq4
+                         pipes-text, pipes-zeromq4,
+                         directory, hashmap, ConfigFile
     hs-source-dirs:      src
     default-language:    Haskell2010
     ghc-options:         -W
@@ -33,7 +34,8 @@ executable odmstream
                          bytestring, text,
                          time, attoparsec, data-msgpack,
                          pipes, pipes-attoparsec, pipes-parse,
-                         pipes-text, pipes-zeromq4
+                         pipes-text, pipes-zeromq4,
+                         directory, hashmap, ConfigFile
     hs-source-dirs:      src
     default-language:    Haskell2010
     ghc-options:         -W

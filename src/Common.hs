@@ -5,17 +5,21 @@ module Common where
 import qualified System.IO as SysIO
 import qualified System.Hardware.Serialport as S
 import qualified System.ZMQ4 as Z
+import qualified System.Directory as D
 
 import           Control.Lens
 import           Control.Monad (forever)
 import qualified Control.Exception as Ex
 
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Lazy as BL
 import           Data.Text (Text)
 import qualified Data.Text.IO as T
 import           Data.Attoparsec.Text
 import           Data.List.NonEmpty (NonEmpty(..))
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Lazy as BL
+import qualified Data.MessagePack as M
+import qualified Data.ConfigFile as CF
+import qualified Data.HashMap as HM
 
 import           Pipes
 import qualified Pipes.Prelude as P
@@ -24,7 +28,6 @@ import qualified Pipes.Parse as PP
 import qualified Pipes.Attoparsec as PA
 import qualified Pipes.ZMQ4 as PZ
 
-import qualified Data.MessagePack as M
 
 type DevPath = String
 
@@ -60,3 +63,16 @@ parseForever parser inflow = do
 encodeToMsgPack :: (MonadIO m, M.MessagePack b) => B.ByteString -> (a -> b) -> Pipe a B.ByteString m ()
 encodeToMsgPack prefix preprocess = P.map $ \dat
     -> foldl B.append B.empty [prefix, " ", BL.toStrict . M.pack . preprocess $ dat]
+
+getConfigFor :: CF.SectionSpec -> IO (HM.Map String String)
+getConfigFor section = do
+    home <- D.getHomeDirectory
+    cfgfile <- D.canonicalizePath (home ++ "/.hsmedstream")
+    mcp <- CF.readfile CF.emptyCP cfgfile
+    let result = do
+            -- Working in Either
+            cp <- mcp
+            CF.items cp section
+    case result of
+         Left e -> error (show e)
+         Right r -> return $ HM.fromList r

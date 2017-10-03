@@ -1,14 +1,12 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings, RecordWildCards #-}
 
 module Main where
 
-import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever, encodeToMsgPack)
+import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever, encodeToMsgPack, getConfigFor)
 
 import Prelude hiding (takeWhile)
 
 import qualified System.IO as SysIO
-import           System.Environment (getArgs)
 import qualified System.ZMQ4 as Z
 import qualified System.Hardware.Serialport as S
 
@@ -16,6 +14,7 @@ import qualified Data.Time as Time
 import qualified Data.Text as T
 import           Data.Attoparsec.Text
 import qualified Data.MessagePack as M
+import qualified Data.HashMap as HM
 
 import           Pipes
 import qualified Pipes.Prelude as P
@@ -74,12 +73,10 @@ aniSerialSettings = S.SerialPortSettings S.CS9600 8 S.One S.NoParity S.NoFlowCon
 
 main :: IO ()
 main = do
-    args <- getArgs
-    let devpath = args !! 0
-    dorun devpath
-  where
-    dorun dev = withSerial dev aniSerialSettings pipeline
-    --dorun _ = SysIO.withFile "anitest.csv" SysIO.ReadMode pipeline
+    config <- getConfigFor "ANI"
+    case "device" `HM.lookup` config of
+         Just devpath -> withSerial devpath aniSerialSettings pipeline
+         Nothing      -> ioError $ userError "No COM device defined"
 
 pipeline :: SysIO.Handle -> IO ()
 pipeline hIn = Z.withContext $ \ctx

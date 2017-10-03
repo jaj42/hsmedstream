@@ -4,10 +4,9 @@
 
 module Main where
 
-import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever, encodeToMsgPack)
+import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever, encodeToMsgPack, getConfigFor)
 
 import qualified System.IO as SysIO
-import           System.Environment (getArgs)
 import qualified System.Hardware.Serialport as S
 import qualified System.ZMQ4 as Z
 
@@ -16,6 +15,7 @@ import           Control.Applicative
 
 import           Data.Attoparsec.Text
 import qualified Data.MessagePack as M
+import qualified Data.HashMap as HM
 
 import           Data.Time.Calendar (fromGregorian)
 import           Data.Time.Clock (UTCTime(..))
@@ -127,12 +127,10 @@ odmSerialSettings = S.SerialPortSettings S.CS57600 8 S.One S.NoParity S.NoFlowCo
 
 main :: IO ()
 main = do
-    args <- getArgs
-    let devpath = args !! 0
-    dorun devpath
-  where
-    dorun dev = withSerial dev odmSerialSettings pipeLine
-    --dorun _ = SysIO.withFile "../testdata/odmtest.csv" SysIO.ReadMode $ runReaderT pipeLine
+    config <- getConfigFor "ODM"
+    case "device" `HM.lookup` config of
+         Just devpath -> withSerial devpath odmSerialSettings pipeline
+         Nothing      -> ioError $ userError "No COM device defined"
 
 keepCalc :: (MonadIO m) => Pipe (Either OdmCalc [OdmWave]) OdmCalc m ()
 keepCalc = forever $ do
@@ -148,8 +146,8 @@ keepWave = forever $ do
         Right c -> yield c
         Left _  -> return ()
 
-pipeLine :: SysIO.Handle -> IO ()
-pipeLine hIn = Z.withContext $ \ctx
+pipeline :: SysIO.Handle -> IO ()
+pipeline hIn = Z.withContext $ \ctx
     -> PT.runSafeT . runEffect $ parseForever parseEither (linesFromHandleForever hIn)
     >-> P.tee P.print >-> P.tee (consumeCalc ctx) >-> consumeWave ctx
   where
