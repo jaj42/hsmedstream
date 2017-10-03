@@ -53,7 +53,7 @@ dateTimeParser = do
 
 parseAniData :: Parser AniData
 parseAniData = do
-    skipSpace -- handle LF after CR
+    skipSpace -- handle newline
     dt <- dateTimeParser
     delimiter
     sqi <- hexadecimal :: Parser Int

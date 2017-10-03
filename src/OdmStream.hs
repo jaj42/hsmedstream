@@ -116,7 +116,7 @@ parseOdmWave = do
     return $ injecttime timedeltas (unzip pudata)
 
 parseEither :: Parser (Either OdmCalc [OdmWave])
-parseEither = skipSpace -- handle LF after CR
+parseEither = skipSpace -- handle newline
   >>  (Left  <$> parseOdmCalc)
   <|> (Right <$> parseOdmWave)
 
