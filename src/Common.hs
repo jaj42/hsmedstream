@@ -49,7 +49,6 @@ dropLog errmsg = await >>= liftIO.printErr errmsg >> cat
   where
     printErr e s = SysIO.hPutStrLn SysIO.stderr (show e ++ ": " ++ show s)
 
-
 parseForever :: (MonadIO m) => Parser a -> Producer Text m () -> Producer a m ()
 parseForever parser inflow = do
     (result, remainder) <- lift $ PP.runStateT (PA.parse parser) inflow
@@ -70,17 +69,8 @@ getConfigFor section = do
     cfgfile <- D.canonicalizePath (configdir ++ "/config.ini")
     mcp <- CF.readfile CF.emptyCP cfgfile
     let result = do
-            -- Working in Either
-            cp <- mcp
-            let local = sectionToHM cp section
-            let common = sectionToHM cp "common"
-            return $ HM.union local common
+            configparser <- mcp
+            CF.items configparser section
     case result of
          Left _  -> return HM.empty
-         Right r -> return r
-  where
-    sectionToHM configparser sectionname =
-        let i = CF.items configparser sectionname
-        in case i of
-                Left _  -> HM.empty
-                Right r -> HM.fromList r
+         Right r -> return $ HM.fromList r
