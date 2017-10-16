@@ -1,5 +1,5 @@
 name:                phystream
-version:             0.0.2.0
+version:             0.0.3.0
 -- synopsis:            
 -- description:         
 license:             ISC
@@ -11,6 +11,15 @@ category:            Data
 build-type:          Simple
 extra-source-files:  ChangeLog.md, README.md
 cabal-version:       >=1.10
+
+executable proxy
+    main-is:             Proxy.hs
+    -- other-modules:
+    -- other-extensions:
+    build-depends:       base, zeromq4-haskell
+    hs-source-dirs:      src
+    default-language:    Haskell2010
+    ghc-options:         -W -threaded
 
 executable anistream
     main-is:             AniStream.hs
@@ -40,11 +49,16 @@ executable odmstream
     default-language:    Haskell2010
     ghc-options:         -W
 
-executable proxy
-    main-is:             Proxy.hs
+executable fresstream
+    main-is:             FresStream.hs
     -- other-modules:
     -- other-extensions:
-    build-depends:       base, zeromq4-haskell
+    build-depends:       base, serialport, lens, zeromq4-haskell,
+                         bytestring, text,
+                         time, attoparsec, data-msgpack,
+                         pipes, pipes-attoparsec, pipes-parse,
+                         pipes-text, pipes-zeromq4,
+                         directory, hashmap, ConfigFile
     hs-source-dirs:      src
     default-language:    Haskell2010
-    ghc-options:         -W -threaded
+    ghc-options:         -W
