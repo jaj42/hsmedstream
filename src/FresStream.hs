@@ -14,6 +14,7 @@ import           Data.Char (ord, toUpper)
 import           Data.Attoparsec.Text
 import           Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import           Data.Monoid ((<>))
 import           Data.Maybe (catMaybes)
 
@@ -69,6 +70,23 @@ buildMessage cmd =
     where
         assemble syringe msg = generateFrame $ (T.pack . show) syringe <> msg
 
+-- | Scan the text for the 'ENQ' caracter and send a 'DC4'
+-- caracter in response to keep the connection alive.
+-- Strip out the 'ENQ' caracter from the text and return
+-- the IO action as well as the stripped text.
+scanKeepAlive :: SysIO.Handle -> Text -> (IO (), Text)
+scanKeepAlive handle txt = 
+    let (acts, pretxt) = unzip (fstpass txt)
+    in (sequence_ acts, T.pack $ catMaybes pretxt)
+  where
+    fstpass :: Text -> [(IO (), Maybe Char)]
+    fstpass txt = case T.uncons txt of
+                       Nothing     -> []
+                       Just (h, t) -> (testChar h) : (fstpass t)
+    testChar c = if c == '\ENQ' then (sendKeepAlive handle, Nothing)
+                                else (return (), Just c)
+    sendKeepAlive h = SysIO.hPutChar h '\DC4'
+
 parseFrame :: Parser FresData
 parseFrame = do
     char '\STX'
@@ -85,53 +103,40 @@ parseProxy parser initial = go initial (pure ())
         let toparse = previous <> yield input
         (result, remainder) <- lift $ PP.runStateT (PA.parse parser) toparse
         let (artifact, newrem) = case result of
-                Nothing  -> (NoData, pure ())
+                Nothing  -> (NoData, remainder)
                 Just sth -> case sth of
                                  Right entry -> (entry,  remainder)
                                  Left err    -> (NoData, remainder >-> dropLog err)
         newcmd <- respond artifact
         isnull <- liftIO $ P.null newrem
-        if isnull then return ()
-                  else go newcmd newrem
+        go newcmd newrem
+        --if isnull then return ()
+        --          else go newcmd newrem
 
---serveStuff :: FresCmd -> Server FresCmd Text IO ()
-serveStuff :: FresCmd -> Proxy X () FresCmd Text IO ()
-serveStuff cmd = do
-    liftIO $ print cmd
-    newcmd <- respond $ buildMessage (Subscribe 2)
-    serveStuff newcmd
+--serveStuff :: SysIO.Handle -> FresCmd -> Server FresCmd Text IO ()
+serveStuff :: SysIO.Handle -> FresCmd -> Proxy X () FresCmd Text IO ()
+serveStuff handle cmd = do
+    txt <- liftIO (T.hGetChunk handle)
+    let (sendKeepAlive, txt') = scanKeepAlive handle txt
+    liftIO sendKeepAlive
+    newcmd <- respond txt'
+    liftIO $ print $ buildMessage newcmd
+    serveStuff handle newcmd
 
 --eatStuff :: FresData -> Client FresCmd FresData IO ()
 eatStuff :: FresData -> Proxy FresCmd FresData () X IO ()
 eatStuff dat = do
-    liftIO $ print dat
     newdat <- request $ Connect 1
     eatStuff newdat
 
-proxyline = serveStuff >+> parseProxy parseFrame >+> eatStuff
+proxyline handle = serveStuff handle >+> parseProxy parseFrame >+> eatStuff
 
 main :: IO ()
-main = runEffect $ proxyline NoData
---main = T.hPutStr SysIO.stdout $ buildMessage (Subscribe 2)
-
--- | Scan the text for the 'ENQ' caracter and send a 'DC4'
--- caracter in response to signal keep-alive.
--- Strip out the 'ENQ' caracter from the text and return
--- the action as well as the stripped text.
-keepAlive :: SysIO.Handle -> Text -> (IO (), Text)
-keepAlive handle txt = 
-    let (acts, pretxt) = unzip (fstpass txt)
-    in (sequence_ acts, T.pack $ catMaybes pretxt)
-  where
-    fstpass :: Text -> [(IO (), Maybe Char)]
-    fstpass txt = case T.uncons txt of
-                       Nothing     -> []
-                       Just (h, t) -> (testChar h) : (fstpass t)
-    testChar c = if c == '\ENQ' then (sendKeepAlive handle, Nothing)
-                                else (return (), Just c)
-    sendKeepAlive h = SysIO.hPutChar h '\DC4'
+main = runEffect $ proxyline SysIO.stdin NoData
 
 --ENQ -> DC4
+--ACK -> allow new cmd
+--NAK -> error handler? allow new cmd
 --DC -> C;numser
 --FC -> C
 --DE -> C
