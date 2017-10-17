@@ -137,7 +137,7 @@ eatStuff dat = do
 
 
 pipeline :: SysIO.Handle -> IO ()
-pipeline handle = runEffect $ (serveStuff handle >~> parseProxy parseFrame >~> eatStuff) Nop
+pipeline handle = runEffect $ (serveStuff handle >+> parseProxy parseFrame >+> eatStuff) NoData
 
 main :: IO ()
 main = do
