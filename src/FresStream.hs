@@ -4,7 +4,10 @@ module Main where
 
 import Prelude hiding (takeWhile)
 
-import Common (dropLog)
+import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever, encodeToMsgPack, getConfigFor, dropLog)
+
+import qualified System.Hardware.Serialport as S
+import qualified Data.HashMap as HM
 
 import           Numeric (showHex)
 
@@ -44,6 +47,9 @@ data FresData = KeepAliveRx
               | NoData
               | Foo Text
     deriving (Show)
+
+fresSerialSettings :: S.SerialPortSettings
+fresSerialSettings = S.SerialPortSettings S.CS57600 8 S.One S.NoParity S.NoFlowControl 1
 
 generateChecksum :: Text -> Text
 generateChecksum msg =
@@ -129,10 +135,16 @@ eatStuff dat = do
     newdat <- request $ Connect 1
     eatStuff newdat
 
-proxyline handle = serveStuff handle >+> parseProxy parseFrame >+> eatStuff
+
+pipeline :: SysIO.Handle -> IO ()
+pipeline handle = runEffect $ (serveStuff handle >~> parseProxy parseFrame >~> eatStuff) Nop
 
 main :: IO ()
-main = runEffect $ proxyline SysIO.stdin NoData
+main = do
+    config <- getConfigFor "fres"
+    case "device" `HM.lookup` config of
+         Just devpath -> withSerial devpath fresSerialSettings pipeline
+         Nothing      -> ioError $ userError "No COM device defined"
 
 --ENQ -> DC4
 --ACK -> allow new cmd
