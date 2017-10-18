@@ -6,12 +6,12 @@ import Prelude hiding (takeWhile)
 
 import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever, encodeToMsgPack, getConfigFor, dropLog)
 
-import qualified System.Hardware.Serialport as S
-import qualified Data.HashMap as HM
-
 import           Numeric (showHex)
 
+import           Control.Applicative
+
 import qualified System.IO as SysIO
+import qualified System.Hardware.Serialport as S
 
 import           Data.Char (ord, toUpper)
 import           Data.Attoparsec.Text
@@ -20,6 +20,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import           Data.Monoid ((<>))
 import           Data.Maybe (catMaybes)
+import qualified Data.HashMap as HM
 
 import           Pipes
 import           Pipes.Core
@@ -41,6 +42,7 @@ data FresCmd = Nop
 
 data FresData = KeepAliveRx
               | AckRx
+              | NakRx
               | Correct
               | Incorrect
               | Event Syringe Volume
@@ -49,7 +51,7 @@ data FresData = KeepAliveRx
     deriving (Show)
 
 fresSerialSettings :: S.SerialPortSettings
-fresSerialSettings = S.SerialPortSettings S.CS57600 8 S.One S.NoParity S.NoFlowControl 1
+fresSerialSettings = S.SerialPortSettings S.CS19200 7 S.One S.Even S.NoFlowControl 1
 
 generateChecksum :: Text -> Text
 generateChecksum msg =
@@ -91,14 +93,19 @@ scanKeepAlive handle txt =
                        Just (h, t) -> (testChar h) : (fstpass t)
     testChar c = if c == '\ENQ' then (sendKeepAlive handle, Nothing)
                                 else (return (), Just c)
-    sendKeepAlive h = SysIO.hPutChar h '\DC4'
+    sendKeepAlive h = print "Sent DC4" >> SysIO.hPutChar h '\DC4'
 
-parseFrame :: Parser FresData
-parseFrame = do
+frameParser :: Parser FresData
+frameParser = do
     char '\STX'
     body <- takeWhile $ inClass " -~"
     char '\ETX'
     return $ Foo body
+
+fresParser :: Parser FresData
+fresParser = 
+    (char '\ACK' >> return AckRx)
+    <|> frameParser
 
 parseProxy :: Parser FresData -> Text -> Proxy FresCmd Text FresCmd FresData IO ()
 parseProxy parser initial = go (pure ()) initial
@@ -113,6 +120,7 @@ parseProxy parser initial = go (pure ()) initial
                                  Right entry -> (entry,  remainder)
                                  Left err    -> (NoData, remainder >-> dropLog err)
         nextinput <- respond artifact >>= request
+        liftIO $ print nextinput
         go newrem nextinput
         --isnull <- liftIO $ P.null newrem
         --if isnull then return ()
@@ -125,17 +133,20 @@ serveStuff handle () = do
     let (sendKeepAlive, txt') = scanKeepAlive handle txt
     liftIO sendKeepAlive
     newcmd <- respond txt'
-    liftIO $ print $ buildMessage newcmd
+    let msg = buildMessage newcmd
+    liftIO $ print msg
+    liftIO $ T.hPutStr handle msg
     serveStuff handle ()
 
 --eatStuff :: FresData -> Client FresCmd FresData IO ()
 eatStuff :: FresData -> Proxy FresCmd FresData () X IO ()
 eatStuff dat = do
-    newdat <- request $ Connect 1
+    liftIO $ print dat
+    newdat <- request $ Connect 0
     eatStuff newdat
 
-pipeline :: SysIO.Handle -> IO ()
-pipeline handle = serveStuff handle >~> parseProxy parseFrame >~> eatStuff
+--pipeline :: SysIO.Handle -> IO ()
+pipeline handle = serveStuff handle >~> parseProxy fresParser >~> eatStuff
 
 runPipe :: SysIO.Handle -> IO ()
 runPipe handle = runEffect $ (pipeline handle) ()
