@@ -100,12 +100,11 @@ parseFrame = do
     char '\ETX'
     return $ Foo body
 
-parseProxy :: Parser FresData -> FresCmd -> Proxy FresCmd Text FresCmd FresData IO ()
-parseProxy parser initial = go initial (pure ())
+parseProxy :: Parser FresData -> Text -> Proxy FresCmd Text FresCmd FresData IO ()
+parseProxy parser initial = go (pure ()) initial
   where
-    go :: FresCmd -> Producer Text IO () -> Proxy FresCmd Text FresCmd FresData IO ()
-    go cmd previous = do
-        input <- request cmd
+    go :: Producer Text IO () -> Text -> Proxy FresCmd Text FresCmd FresData IO ()
+    go previous input = do
         let toparse = previous <> yield input
         (result, remainder) <- lift $ PP.runStateT (PA.parse parser) toparse
         let (artifact, newrem) = case result of
@@ -113,21 +112,21 @@ parseProxy parser initial = go initial (pure ())
                 Just sth -> case sth of
                                  Right entry -> (entry,  remainder)
                                  Left err    -> (NoData, remainder >-> dropLog err)
-        newcmd <- respond artifact
-        isnull <- liftIO $ P.null newrem
-        go newcmd newrem
+        nextinput <- respond artifact >>= request
+        go newrem nextinput
+        --isnull <- liftIO $ P.null newrem
         --if isnull then return ()
         --          else go newcmd newrem
 
---serveStuff :: SysIO.Handle -> FresCmd -> Server FresCmd Text IO ()
-serveStuff :: SysIO.Handle -> FresCmd -> Proxy X () FresCmd Text IO ()
-serveStuff handle cmd = do
+--serveStuff :: SysIO.Handle -> () -> Server FresCmd Text IO ()
+serveStuff :: SysIO.Handle -> () -> Proxy X () FresCmd Text IO ()
+serveStuff handle () = do
     txt <- liftIO (T.hGetChunk handle)
     let (sendKeepAlive, txt') = scanKeepAlive handle txt
     liftIO sendKeepAlive
     newcmd <- respond txt'
     liftIO $ print $ buildMessage newcmd
-    serveStuff handle newcmd
+    serveStuff handle ()
 
 --eatStuff :: FresData -> Client FresCmd FresData IO ()
 eatStuff :: FresData -> Proxy FresCmd FresData () X IO ()
@@ -135,15 +134,17 @@ eatStuff dat = do
     newdat <- request $ Connect 1
     eatStuff newdat
 
-
 pipeline :: SysIO.Handle -> IO ()
-pipeline handle = runEffect $ (serveStuff handle >+> parseProxy parseFrame >+> eatStuff) NoData
+pipeline handle = serveStuff handle >~> parseProxy parseFrame >~> eatStuff
+
+runPipe :: SysIO.Handle -> IO ()
+runPipe handle = runEffect $ (pipeline handle) ()
 
 main :: IO ()
 main = do
     config <- getConfigFor "fres"
     case "device" `HM.lookup` config of
-         Just devpath -> withSerial devpath fresSerialSettings pipeline
+         Just devpath -> withSerial devpath fresSerialSettings runPipe
          Nothing      -> ioError $ userError "No COM device defined"
 
 --ENQ -> DC4
