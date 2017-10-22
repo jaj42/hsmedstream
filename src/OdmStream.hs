@@ -147,7 +147,7 @@ keepWave = forever $ do
 pipeline :: SysIO.Handle -> IO ()
 pipeline hIn = Z.withContext $ \ctx
     -> PT.runSafeT . runEffect $ parseForever parseEither (linesFromHandleForever hIn)
-    >-> P.tee P.print >-> P.tee (consumeCalc ctx) >-> consumeWave ctx
+    >-> P.tee (consumeCalc ctx) >-> consumeWave ctx
   where
     odmEncodeWith = encodeToMsgPack "odm"
     consumeCalc ctx = keepCalc >-> odmEncodeWith calcMsgPack >-> zmqConsumer ctx "tcp://127.0.0.1:4201"

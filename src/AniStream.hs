@@ -81,7 +81,7 @@ main = do
 pipeline :: SysIO.Handle -> IO ()
 pipeline hIn = Z.withContext $ \ctx
     -> PT.runSafeT . runEffect $ parseForever parseAniData (linesFromHandleForever hIn)
-    >-> P.tee P.print >-> P.filter valid >-> encodeToMsgPack "ani" aniMsgPack
+    >-> P.filter valid >-> encodeToMsgPack "ani" aniMsgPack
     >-> zmqConsumer ctx "tcp://127.0.0.1:4201"
 
 aniMsgPack :: AniData -> M.Assoc [(String, M.Object)]
