@@ -1,3 +1,4 @@
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -11,8 +12,9 @@ import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever, en
 import           Numeric (showHex)
 
 import           Control.Applicative
-import           Control.Concurrent.MVar
+import           Control.Concurrent (threadDelay)
 import           Control.Monad.State
+import           Control.Lens
 
 import qualified System.IO as SysIO
 import qualified System.Hardware.Serialport as S
@@ -29,7 +31,7 @@ import           Data.Time.Clock.POSIX
 
 import           Pipes
 import           Pipes.Core
---import qualified Pipes.Prelude as P
+import qualified Pipes.Prelude as P
 import qualified Pipes.Parse as PP
 import qualified Pipes.Attoparsec as PA
 
@@ -41,27 +43,29 @@ data FresCmd = Nop
              | Disconnect Syringe
              | Subscribe Syringe
              | ListSyringes
-             | KeepAliveTx
+             | KeepAlive
              | AckTx
     deriving (Show)
 
-data FresData = KeepAliveRx
-              | AckRx
+data FresData = AckRx
               | NakRx
               | Correct
               | Incorrect
               | Event Syringe Volume
+              | SyringeEnum [Syringe]
               | NoData
-              | Foo Text
     deriving (Show)
 
 data CommState = CommState {
-    _readytosend :: Bool,
-    _timelastseen :: POSIXTime,
-    _reqlssyringes :: MVar (),
+    _readyToSend :: Bool,
+    _timeLastSeen :: POSIXTime,
+    _timeLastEnum :: POSIXTime,
     _syringes :: [Syringe],
     _commands :: [FresCmd]
 }
+
+--makeLenses ''CommState
+initState = CommState True 0 0 [] []
 
 newtype App a = App {
     runApp :: (StateT CommState IO) a
@@ -87,7 +91,7 @@ buildMessage cmd =
     case cmd of
         Nop          -> ""
         AckTx        -> "\ACK"
-        KeepAliveTx  -> "\DC4"
+        KeepAlive    -> "\DC4"
         ListSyringes -> assemble 0 "LE;b"
         Connect s    -> assemble s "DC"
         Disconnect s -> assemble s "FC"
@@ -96,12 +100,12 @@ buildMessage cmd =
         assemble syringe msg = generateFrame $ (T.pack . show) syringe <> msg
 
 sendCommand :: SysIO.Handle -> FresCmd -> IO ()
+sendCommand h (Connect 0) = T.hPutStr h (buildMessage (Connect 0)) >> threadDelay 1000000
 sendCommand h c = T.hPutStr h (buildMessage c)
 
--- | Scan the text for the 'ENQ' caracter and send a 'DC4'
--- caracter in response to keep the connection alive.
--- Strip out the 'ENQ' caracter from the text and return
--- the IO action as well as the stripped text.
+-- | Scan the text for the 'ENQ' caracter. Strip out the 'ENQ' caracter
+-- from the text and return a keep-alive request indicator as well as
+-- the stripped text.
 scanKeepAlive :: Text -> (Bool, Text)
 scanKeepAlive txt = 
     let (reqtx, pretxt) = unzip (fstpass txt)
@@ -111,21 +115,24 @@ scanKeepAlive txt =
     fstpass txt = case T.uncons txt of
                        Nothing     -> []
                        Just (h, t) -> (testChar h) : (fstpass t)
-    testChar c = if c == '\ENQ' then (True, Nothing)
-                                else (False, Just c)
+    testChar '\ENQ' = (True, Nothing)
+    testChar c = (False, Just c)
 
-frameParser :: Parser FresData
-frameParser = do
+parseFrame :: Parser FresData
+parseFrame = do
     char '\STX'
-    body <- takeWhile $ inClass " -~"
+    body <- parseCorrect <|> parseIncorrect
     char '\ETX'
-    return $ Foo body
+    return body
+
+parseCorrect   = digit *> char 'C' *> takeWhile (inClass " -~") *> pure Correct
+parseIncorrect = digit *> char 'I' *> takeWhile (inClass " -~") *> pure Incorrect
 
 fresParser :: Parser FresData
 fresParser = 
     (char '\ACK' >> return AckRx) <|>
     (char '\NAK' >> anyChar >> return NakRx) <|>
-    frameParser
+    parseFrame
 
 parseProxy :: (MonadIO m, MonadState CommState m) => Parser FresData -> Text -> Proxy FresCmd Text FresCmd FresData m ()
 parseProxy parser initial = go (pure ()) initial
@@ -138,51 +145,66 @@ parseProxy parser initial = go (pure ()) initial
                 Nothing  -> (NoData, remainder)
                 Just sth -> case sth of
                                  Right entry -> (entry,  remainder)
-                                 Left err    -> (NoData, remainder)
+                                 Left _      -> (NoData, remainder)
         nextinput <- respond artifact >>= request
         go newrem nextinput
-        --isnull <- liftIO $ P.null newrem
-        --if isnull then return ()
-        --          else go newcmd newrem
 
---stateProxy :: (MonadIO m, MonadState CommState m) => FresData -> Proxy FresCmd FresData FresCmd FresData m ()
---stateProxy dat = do
---    case dat of
---        AckRx -> lift $ modify (\s -> s { _readytosend = True })
---    cmd <- respond dat
---    nextdat <- request cmd
---    stateProxy nextdat
+-- stateProxy:
+-- modify state according to Data
+-- handle reqlssyringes
+-- send Command or Nop upstream
+-- send stuff downstream
+-- recurse
 
---serveStuff :: SysIO.Handle -> () -> Proxy X () FresCmd Text App ()
-serveStuff :: SysIO.Handle -> () -> Server FresCmd Text App ()
-serveStuff handle () = do
+stateProxy :: FresData -> Proxy FresCmd FresData () FresData App ()
+stateProxy dat = do
+    case dat of
+        Event _ _ -> yield dat
+        AckRx     -> modify (\s -> s { _readyToSend = True })
+        NakRx     -> modify (\s -> s { _readyToSend = True })
+        NoData    -> return ()
+        Correct   -> return ()
+        Incorrect -> return ()
+        SyringeEnum s -> return () -- connectNewSyringes s (update _timeLastEnum)
+    seentime <- gets _timeLastSeen
+    enumtime <- gets _timeLastEnum
+    curtime <- liftIO $ getPOSIXTime
+    -- No news for more than 10s? We are no longer connected
+    when (curtime - seentime > 10) $ modify (\s -> s { _commands = [Connect 0]})
+    -- Update list of connected syringes every 5s.
+    --when (curtime - enumtime > 5) $ modify (\s -> s { _commands = [Connect 0]})
+
+    let cmd = Connect 0
+    newdat <- request cmd
+    stateProxy newdat
+  --where
+    --popCommand = return ()
+    --prependCommand cmd = return ()
+
+--if readytosend:
+--take commands or nop
+--else nop
+
+ioHandler :: SysIO.Handle -> Server FresCmd Text App ()
+ioHandler handle = do
     txt <- liftIO (T.hGetChunk handle)
 
-    newtime <- liftIO getPOSIXTime
+    curtime <- liftIO getPOSIXTime
     let isnull = T.null txt
-    unless isnull $ lift $ modify (\s -> s { _timelastseen = newtime })
+    unless isnull $ modify (\s -> s { _timeLastSeen = curtime })
 
     let (needKeepAlive, txt') = scanKeepAlive txt
-    when needKeepAlive $ liftIO $ sendCommand handle KeepAliveTx
+    when needKeepAlive (liftIO $ sendCommand handle KeepAlive)
     cmd <- respond txt'
-    liftIO (print cmd >> sendCommand handle cmd)
-    serveStuff handle ()
+    liftIO $ sendCommand handle cmd
+    ioHandler handle
 
---eatStuff :: FresData -> Proxy FresCmd FresData () X App ()
-eatStuff :: FresData -> Client FresCmd FresData App ()
-eatStuff dat = do
-    liftIO $ print dat
-    newdat <- request $ Connect 0
-    eatStuff newdat
-
-pipeline :: SysIO.Handle -> (() -> Effect App ())
-pipeline handle = serveStuff handle >~> parseProxy fresParser >~> eatStuff
+pipeline :: SysIO.Handle -> Effect App ()
+pipeline handle = ioHandler handle >>~ parseProxy fresParser >>~ stateProxy >-> P.print
 
 runPipe :: SysIO.Handle -> IO ()
 runPipe handle = do
-    reqlssyringes <- newEmptyMVar
-    let initState = CommState True 0 reqlssyringes [] []
-    evalStateT (runApp $ runEffect $ (pipeline handle) ()) initState
+    (runApp $ runEffect $ pipeline handle) `evalStateT` initState
 
 main :: IO ()
 main = do
