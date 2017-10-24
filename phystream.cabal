@@ -23,7 +23,7 @@ executable proxy
 
 executable anistream
     main-is:             AniStream.hs
-    -- other-modules:
+    other-modules:       Common
     -- other-extensions:
     build-depends:       base, serialport, lens, zeromq4-haskell,
                          bytestring, text,
@@ -37,7 +37,7 @@ executable anistream
 
 executable odmstream
     main-is:             OdmStream.hs
-    -- other-modules:
+    other-modules:       Common
     -- other-extensions:
     build-depends:       base, serialport, lens, zeromq4-haskell,
                          bytestring, text,
@@ -51,10 +51,10 @@ executable odmstream
 
 executable fresstream
     main-is:             FresStream.hs
-    -- other-modules:
-    -- other-extensions:
+    other-modules:       Common
+    other-extensions:    TemplateHaskell
     build-depends:       base, serialport, lens, zeromq4-haskell,
-                         bytestring, text, mtl,
+                         bytestring, text, mtl, template-haskell,
                          time, attoparsec, data-msgpack,
                          pipes, pipes-attoparsec, pipes-parse,
                          pipes-text, pipes-zeromq4,
