@@ -2,7 +2,7 @@
 
 module Main where
 
-import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever, encodeToMsgPack, getConfigFor)
+import Common (fromHandleForever, lineByLine, withSerial, zmqConsumer, parseForever, encodeToMsgPack, getConfigFor)
 
 import Prelude hiding (takeWhile)
 
@@ -80,7 +80,7 @@ main = do
 
 pipeline :: SysIO.Handle -> IO ()
 pipeline hIn = Z.withContext $ \ctx
-    -> PT.runSafeT . runEffect $ parseForever parseAniData (linesFromHandleForever hIn)
+    -> PT.runSafeT . runEffect $ parseForever parseAniData (lineByLine $ fromHandleForever hIn)
     >-> P.filter valid >-> encodeToMsgPack "ani" aniMsgPack
     >-> zmqConsumer ctx "tcp://127.0.0.1:4201"
 

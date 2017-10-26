@@ -2,7 +2,7 @@
 
 module Main where
 
-import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever, encodeToMsgPack, getConfigFor)
+import Common (fromHandleForever, lineByLine, withSerial, zmqConsumer, parseForever, encodeToMsgPack, getConfigFor)
 
 import qualified System.IO as SysIO
 import qualified System.Hardware.Serialport as S
@@ -146,7 +146,7 @@ keepWave = forever $ do
 
 pipeline :: SysIO.Handle -> IO ()
 pipeline hIn = Z.withContext $ \ctx
-    -> PT.runSafeT . runEffect $ parseForever parseEither (linesFromHandleForever hIn)
+    -> PT.runSafeT . runEffect $ parseForever parseEither (lineByLine $ fromHandleForever hIn)
     >-> P.tee (consumeCalc ctx) >-> consumeWave ctx
   where
     odmEncodeWith = encodeToMsgPack "odm"

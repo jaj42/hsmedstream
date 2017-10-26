@@ -14,6 +14,7 @@ import qualified Control.Exception as Ex
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import           Data.Text (Text)
+import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import           Data.Attoparsec.Text
 import           Data.List.NonEmpty (NonEmpty(..))
@@ -34,11 +35,15 @@ type DevPath = String
 withSerial :: DevPath -> S.SerialPortSettings -> (SysIO.Handle -> IO a) -> IO a
 withSerial dev settings = Ex.bracket (S.hOpenSerial dev settings) SysIO.hClose
 
-linesFromHandleForever :: (MonadIO m) => SysIO.Handle -> Producer Text m ()
-linesFromHandleForever h = lineByLine (forever go)
+fromHandleForever :: MonadIO m => SysIO.Handle -> Producer Text m ()
+fromHandleForever h = forever go
   where
-    lineByLine = view PT.unlines . view PT.lines
-    go = liftIO (T.hGetChunk h) >>= yield
+      go = do txt <- liftIO (T.hGetChunk h)
+              if T.null txt then return ()
+                            else yield txt
+
+lineByLine :: MonadIO m => Producer Text m () -> Producer Text m ()
+lineByLine = view PT.unlines . view PT.lines
 
 zmqConsumer :: (PZ.MonadSafe m, PZ.Base m ~ IO)
     => Z.Context -> String -> Consumer PT.ByteString m ()
