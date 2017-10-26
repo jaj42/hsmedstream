@@ -30,7 +30,7 @@ import           Data.Maybe (catMaybes)
 import qualified Data.HashMap as HM
 import           Data.Time.Clock.POSIX
 import           Data.List ((\\), uncons)
-import           Data.Bits (testBitDefault)
+import           Data.Bits (testBit)
 
 import           Pipes
 import           Pipes.Core
@@ -71,6 +71,8 @@ data CommState = CommState {
     deriving (Show)
 
 --makeLenses ''CommState
+defaultState = CommState True 0 0 [] []
+
 
 newtype App a = App {
     runApp :: (StateT CommState IO) a
@@ -148,7 +150,7 @@ parseSyringeEnum = do
     string "0LE;b"
     hexval <- hexadecimal :: Parser Int
     let (syrbits, _) = quotRem hexval 0x100 -- rem is checksum
-    let syrlist = (+1) <$> filter (testBitDefault syrbits) [0..5]
+    let syrlist = (+1) <$> filter (testBit syrbits) [0..5]
     return $ SyringeEnum syrlist
 
 ioHandler :: SysIO.Handle -> Server FresCmd Text App ()
@@ -212,6 +214,7 @@ connectNewSyringes newlist = do
 
 stateProxy :: FresData -> Proxy FresCmd FresData () FresData App ()
 stateProxy dat = do
+    get >>= liftIO.print
     let ack = prependCommand AckTx
     case dat of
         NoData        -> return ()
@@ -242,8 +245,8 @@ pipeline handle = ioHandler handle >>~ parseProxy fresParser >>~ stateProxy >-> 
 
 runPipe :: SysIO.Handle -> IO ()
 runPipe handle = do
-    lastEnum <- getPOSIXTime
-    let initState = CommState True 0 lastEnum [] []
+    curtime <- getPOSIXTime
+    let initState = defaultState { _timeLastEnum = curtime }
     (runApp $ runEffect $ pipeline handle) `evalStateT` initState
 
 main :: IO ()
