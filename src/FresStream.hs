@@ -34,8 +34,8 @@ import           Data.Bits (testBit)
 import           Pipes
 import           Pipes.Core
 import qualified Pipes.Prelude as P
-import qualified Pipes.Parse as PP
-import qualified Pipes.Attoparsec as PA
+--import qualified Pipes.Parse as PP
+--import qualified Pipes.Attoparsec as PA
 
 type Syringe = Int
 type Volume  = Float
@@ -180,20 +180,37 @@ ioHandler handle = do
                             modify (\s -> s { _readyToSend = False})
     ioHandler handle
 
-parseProxy :: (MonadIO m, MonadState CommState m) => Parser FresData -> Text -> Proxy FresCmd Text FresCmd FresData m ()
-parseProxy parser initial = go (pure ()) initial
+--parseProxy :: (MonadIO m, MonadState CommState m) => Parser FresData -> Text -> Proxy FresCmd Text FresCmd FresData m ()
+--parseProxy parser initial = go (pure ()) initial
+--  where
+--    go :: (MonadState CommState m) => Producer Text m () -> Text -> Proxy FresCmd Text FresCmd FresData m ()
+--    go previous input = do
+--        let toparse = previous <> yield input
+--        (result, remainder) <- lift $ PP.runStateT (PA.parse parser) toparse
+--        let (fresdat, newrem) = case result of
+--                Nothing  -> (NoData, remainder)
+--                Just sth -> case sth of
+--                                 Right entry -> (entry,  remainder)
+--                                 Left _      -> (NoData, remainder)
+--        nextinput <- respond fresdat >>= request
+--        go newrem nextinput
+
+--parseProxy :: (MonadIO m, MonadState CommState m) => Parser FresData -> Text -> Proxy FresCmd Text FresCmd FresData m ()
+parseProxy :: (MonadIO m, MonadState CommState m) => Parser FresData -> Text -> Proxy a Text a FresData m ()
+parseProxy parser initial = goNew initial
   where
-    go :: (MonadState CommState m) => Producer Text m () -> Text -> Proxy FresCmd Text FresCmd FresData m ()
-    go previous input = do
-        let toparse = previous <> yield input
-        (result, remainder) <- lift $ PP.runStateT (PA.parse parser) toparse
-        let (fresdat, newrem) = case result of
-                Nothing  -> (NoData, remainder)
-                Just sth -> case sth of
-                                 Right entry -> (entry,  remainder)
-                                 Left _      -> (NoData, remainder)
-        nextinput <- respond fresdat >>= request
-        go newrem nextinput
+    goNew input = decideNext $ parse parser input
+    goPart prevres = do
+        newinput <- respond NoData >>= request
+        decideNext $ feed prevres newinput
+    decideNext result =
+        case result of
+            Done newrem fresultdat -> do newinput <- respond fresultdat >>= request
+                                         goNew (newrem <> newinput)
+            Partial _  -> goPart result
+            Fail _ _ _ -> do liftIO $ SysIO.hPutStrLn SysIO.stderr (show result)
+                             newinput <- respond NoData >>= request
+                             goNew newinput
 
 prependCommand :: (MonadState CommState m) => FresCmd -> m ()
 prependCommand cmd = do {xs <- gets _commands; modify (\s -> s { _commands = cmd:xs })}
