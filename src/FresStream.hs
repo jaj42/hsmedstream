@@ -180,18 +180,18 @@ ioHandler handle = do
                             modify (\s -> s { _readyToSend = False})
     ioHandler handle
 
-parseProxy :: (MonadIO m, MonadState CommState m) => Parser FresData -> Text -> Proxy a Text a FresData m ()
+parseProxy :: (MonadIO m, MonadState CommState m, Show b) => Parser b -> Text -> Proxy a Text a (Maybe b) m ()
 parseProxy parser = goNew
   where
     goNew input = decideNext $ parse parser input
     goPart cont input = decideNext $ feed cont input
-    reqWith old = respond old >>= request
+    reqWith dat = respond dat >>= request
     printErr err = liftIO $ SysIO.hPrint SysIO.stderr err
     decideNext result =
         case result of
-            Done r d   -> reqWith d >>= goNew.(r <>)
-            Partial _  -> reqWith NoData >>= goPart result
-            Fail _ _ _ -> printErr result >> reqWith NoData >>= goNew
+            Done r d   -> reqWith (Just d) >>= goNew.(r <>)
+            Partial _  -> reqWith Nothing >>= goPart result
+            Fail _ _ _ -> printErr result >> reqWith Nothing >>= goNew
 
 prependCommand :: (MonadState CommState m) => FresCmd -> m ()
 prependCommand cmd = do {xs <- gets _commands; modify (\s -> s { _commands = cmd:xs })}
@@ -214,12 +214,13 @@ connectNewSyringes newlist = do
     forM_ newsyringes (appendCommand.Subscribe)
     modify (\s -> s { _syringes = newlist})
 
-stateProxy :: FresData -> Proxy FresCmd FresData () FresData App ()
+stateProxy :: (Maybe FresData) -> Proxy FresCmd (Maybe FresData) () FresData App ()
 stateProxy dat = do
     get >>= liftIO.print
     let ack = prependCommand AckTx
     let ready = modify (\s -> s { _readyToSend = True })
-    case dat of
+    let dat' = fromMaybe NoData dat
+    case dat' of
         NoData        -> return ()
         AckRx         -> return ()
         NakRx         -> ready
@@ -228,7 +229,7 @@ stateProxy dat = do
         SyringeEnum s -> ack >> ready >> connectNewSyringes s
         VolEvent s _  -> do prependCommand (AckVolEvent s)
                             ack >> ready
-                            yield dat
+                            yield dat'
     seentime <- gets _timeLastSeen
     enumtime <- gets _timeLastEnum
     curtime <- liftIO getPOSIXTime
