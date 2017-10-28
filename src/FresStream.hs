@@ -19,17 +19,16 @@ import           Control.Monad.State
 import qualified System.IO as SysIO
 import qualified System.Hardware.Serialport as S
 
-import           Data.Char (ord, toUpper)
-import           Data.Attoparsec.Text
-import           Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
-import           Data.Monoid ((<>))
-import           Data.Maybe (fromMaybe, catMaybes)
-import qualified Data.HashMap as HM
-import           Data.Time.Clock.POSIX
-import           Data.List ((\\), uncons)
+import qualified Data.ByteString.Char8 as B
+import           Data.Attoparsec.ByteString.Char8
 import           Data.Bits (testBit)
+import           Data.ByteString.Char8 (ByteString)
+import           Data.Char (ord, toUpper)
+import qualified Data.HashMap as HM
+import           Data.List ((\\), uncons)
+import           Data.Maybe (fromMaybe, catMaybes)
+import           Data.Monoid ((<>))
+import           Data.Time.Clock.POSIX
 
 import           Pipes
 import           Pipes.Core
@@ -79,19 +78,19 @@ newtype App a = App {
 fresSerialSettings :: S.SerialPortSettings
 fresSerialSettings = S.SerialPortSettings S.CS19200 7 S.One S.Even S.NoFlowControl 1
 
-generateChecksum :: Text -> Text
+generateChecksum :: ByteString -> ByteString
 generateChecksum msg =
     let 
-        sall = sum $ ord <$> T.unpack msg
+        sall = sum $ ord <$> B.unpack msg
         low = rem sall 0x100
         checksum = 0xFF - low
     in
-        T.pack $ toUpper <$> showHex checksum ""
+        B.pack $ toUpper <$> showHex checksum ""
 
-generateFrame :: Text -> Text
+generateFrame :: ByteString -> ByteString
 generateFrame msg = "\STX" <> msg <> generateChecksum msg <> "\ETX"
 
-buildMessage :: FresCmd -> Text
+buildMessage :: FresCmd -> ByteString
 buildMessage cmd =
     case cmd of
         Nop           -> ""
@@ -104,21 +103,21 @@ buildMessage cmd =
         Subscribe s   -> assemble s "DE;r"
         AckVolEvent s -> assemble s "E"
     where
-        assemble syringe msg = generateFrame $ (T.pack . show) syringe <> msg
+        assemble syringe msg = generateFrame $ (B.pack . show) syringe <> msg
 
 sendCommand :: SysIO.Handle -> FresCmd -> IO ()
-sendCommand h c = T.hPutStr h (buildMessage c)
+sendCommand h c = B.hPutStr h (buildMessage c)
 
 -- | Scan the text for the 'ENQ' caracter. Strip out the 'ENQ' caracter
 -- from the text and return a keep-alive request indicator as well as
 -- the stripped text.
-scanKeepAlive :: Text -> (Bool, Text)
+scanKeepAlive :: ByteString -> (Bool, ByteString)
 scanKeepAlive txt = 
     let (reqtx, pretxt) = unzip (fstpass txt)
-    in (or reqtx, T.pack $ catMaybes pretxt)
+    in (or reqtx, B.pack $ catMaybes pretxt)
   where
-    fstpass :: Text -> [(Bool, Maybe Char)]
-    fstpass txt = case T.uncons txt of
+    fstpass :: ByteString -> [(Bool, Maybe Char)]
+    fstpass txt = case B.uncons txt of
                        Nothing     -> []
                        Just (h, t) -> testChar h : fstpass t
     testChar '\ENQ' = (True, Nothing)
@@ -159,13 +158,13 @@ parseVolEvent = do
     let (volume, _) = quotRem hexval 0x100 -- rem is checksum
     return $ VolEvent syringe (fromIntegral volume / 1000)
 
-ioHandler :: SysIO.Handle -> Server FresCmd Text App ()
+ioHandler :: SysIO.Handle -> Server FresCmd ByteString App ()
 ioHandler handle = do
-    txt <- liftIO (T.hGetChunk handle)
+    txt <- liftIO (B.hGetSome handle 128)
     liftIO $ print ("<- " <> txt)
 
     curtime <- liftIO getPOSIXTime
-    let isnull = T.null txt
+    let isnull = B.null txt
     unless isnull $ modify (\s -> s { _timeLastSeen = curtime })
 
     let (needKeepAlive, txt') = scanKeepAlive txt
@@ -180,7 +179,7 @@ ioHandler handle = do
                             modify (\s -> s { _readyToSend = False})
     ioHandler handle
 
-parseProxy :: (MonadIO m, Show b) => Parser b -> Text -> Proxy a Text a (Maybe b) m ()
+parseProxy :: (MonadIO m, Show b) => Parser b -> ByteString -> Proxy a ByteString a (Maybe b) m ()
 parseProxy parser = goNew
   where
     goNew input = decideNext $ parse parser input
