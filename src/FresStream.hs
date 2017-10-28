@@ -211,7 +211,7 @@ connectNewSyringes newlist = do
     oldlist <- gets _syringes
     let newsyringes = newlist \\ oldlist
     forM_ newsyringes (appendCommand.Connect)
-    forM_ newsyringes (appendCommand.Subscribe)
+    forM_ newlist (appendCommand.Subscribe)
     modify (\s -> s { _syringes = newlist})
 
 stateProxy :: (Maybe FresData) -> Proxy FresCmd (Maybe FresData) () FresData App ()
