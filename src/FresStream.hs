@@ -180,7 +180,7 @@ ioHandler handle = do
                             modify (\s -> s { _readyToSend = False})
     ioHandler handle
 
-parseProxy :: (MonadIO m, MonadState CommState m, Show b) => Parser b -> Text -> Proxy a Text a (Maybe b) m ()
+parseProxy :: (MonadIO m, Show b) => Parser b -> Text -> Proxy a Text a (Maybe b) m ()
 parseProxy parser = goNew
   where
     goNew input = decideNext $ parse parser input
