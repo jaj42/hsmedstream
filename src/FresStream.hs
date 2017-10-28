@@ -197,20 +197,18 @@ ioHandler handle = do
 
 --parseProxy :: (MonadIO m, MonadState CommState m) => Parser FresData -> Text -> Proxy FresCmd Text FresCmd FresData m ()
 parseProxy :: (MonadIO m, MonadState CommState m) => Parser FresData -> Text -> Proxy a Text a FresData m ()
-parseProxy parser initial = goNew initial
+parseProxy parser input = goNew input
   where
     goNew input = decideNext $ parse parser input
-    goPart prevres = do
-        newinput <- respond NoData >>= request
-        decideNext $ feed prevres newinput
+    goPart prevres input = decideNext $ feed prevres input
+    getNew old = respond old >>= request
     decideNext result =
         case result of
-            Done newrem fresultdat -> do newinput <- respond fresultdat >>= request
-                                         goNew (newrem <> newinput)
-            Partial _  -> goPart result
+            Done newrem fresdat -> do newinput <- getNew fresdat
+                                      goNew (newrem <> newinput)
+            Partial _  -> getNew NoData >>= goPart result
             Fail _ _ _ -> do liftIO $ SysIO.hPutStrLn SysIO.stderr (show result)
-                             newinput <- respond NoData >>= request
-                             goNew newinput
+                             getNew NoData >>= goNew
 
 prependCommand :: (MonadState CommState m) => FresCmd -> m ()
 prependCommand cmd = do {xs <- gets _commands; modify (\s -> s { _commands = cmd:xs })}
