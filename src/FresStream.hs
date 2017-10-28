@@ -1,7 +1,7 @@
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE FlexibleContexts #-}
+--{-# LANGUAGE TemplateHaskell #-}
 
 module Main where
 
@@ -25,7 +25,7 @@ import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import           Data.Monoid ((<>))
-import           Data.Maybe (catMaybes)
+import           Data.Maybe (fromMaybe, catMaybes)
 import qualified Data.HashMap as HM
 import           Data.Time.Clock.POSIX
 import           Data.List ((\\), uncons)
@@ -120,7 +120,7 @@ scanKeepAlive txt =
     fstpass :: Text -> [(Bool, Maybe Char)]
     fstpass txt = case T.uncons txt of
                        Nothing     -> []
-                       Just (h, t) -> (testChar h) : (fstpass t)
+                       Just (h, t) -> testChar h : fstpass t
     testChar '\ENQ' = (True, Nothing)
     testChar c = (False, Just c)
 
@@ -162,7 +162,7 @@ parseVolEvent = do
 ioHandler :: SysIO.Handle -> Server FresCmd Text App ()
 ioHandler handle = do
     txt <- liftIO (T.hGetChunk handle)
-    --liftIO $ print ("<- " <> txt)
+    liftIO $ print ("<- " <> txt)
 
     curtime <- liftIO getPOSIXTime
     let isnull = T.null txt
@@ -180,35 +180,18 @@ ioHandler handle = do
                             modify (\s -> s { _readyToSend = False})
     ioHandler handle
 
---parseProxy :: (MonadIO m, MonadState CommState m) => Parser FresData -> Text -> Proxy FresCmd Text FresCmd FresData m ()
---parseProxy parser initial = go (pure ()) initial
---  where
---    go :: (MonadState CommState m) => Producer Text m () -> Text -> Proxy FresCmd Text FresCmd FresData m ()
---    go previous input = do
---        let toparse = previous <> yield input
---        (result, remainder) <- lift $ PP.runStateT (PA.parse parser) toparse
---        let (fresdat, newrem) = case result of
---                Nothing  -> (NoData, remainder)
---                Just sth -> case sth of
---                                 Right entry -> (entry,  remainder)
---                                 Left _      -> (NoData, remainder)
---        nextinput <- respond fresdat >>= request
---        go newrem nextinput
-
---parseProxy :: (MonadIO m, MonadState CommState m) => Parser FresData -> Text -> Proxy FresCmd Text FresCmd FresData m ()
 parseProxy :: (MonadIO m, MonadState CommState m) => Parser FresData -> Text -> Proxy a Text a FresData m ()
-parseProxy parser input = goNew input
+parseProxy parser = goNew
   where
     goNew input = decideNext $ parse parser input
-    goPart prevres input = decideNext $ feed prevres input
-    getNew old = respond old >>= request
+    goPart cont input = decideNext $ feed cont input
+    reqWith old = respond old >>= request
+    printErr err = liftIO $ SysIO.hPrint SysIO.stderr err
     decideNext result =
         case result of
-            Done newrem fresdat -> do newinput <- getNew fresdat
-                                      goNew (newrem <> newinput)
-            Partial _  -> getNew NoData >>= goPart result
-            Fail _ _ _ -> do liftIO $ SysIO.hPutStrLn SysIO.stderr (show result)
-                             getNew NoData >>= goNew
+            Done r d   -> reqWith d >>= goNew.(r <>)
+            Partial _  -> reqWith NoData >>= goPart result
+            Fail _ _ _ -> printErr result >> reqWith NoData >>= goNew
 
 prependCommand :: (MonadState CommState m) => FresCmd -> m ()
 prependCommand cmd = do {xs <- gets _commands; modify (\s -> s { _commands = cmd:xs })}
@@ -219,9 +202,7 @@ appendCommand cmd = do {xs <- gets _commands; modify (\s -> s { _commands = xs +
 popCommand :: (MonadState CommState m) => m FresCmd
 popCommand = do
     cmdlist <- gets _commands;
-    let (cmd, cmds) = case uncons cmdlist of
-            Just lst -> lst
-            Nothing  -> (Nop, [])
+    let (cmd, cmds) = fromMaybe (Nop, []) (uncons cmdlist)
     modify (\s -> s { _commands = cmds })
     return cmd
 
@@ -229,13 +210,13 @@ connectNewSyringes :: (MonadState CommState m, MonadIO m) => [Syringe] -> m ()
 connectNewSyringes newlist = do
     oldlist <- gets _syringes
     let newsyringes = newlist \\ oldlist
-    forM_ newsyringes (\s -> appendCommand (Connect s))
-    forM_ newsyringes (\s -> appendCommand (Subscribe s))
+    forM_ newsyringes (appendCommand.Connect)
+    forM_ newsyringes (appendCommand.Subscribe)
     modify (\s -> s { _syringes = newlist})
 
 stateProxy :: FresData -> Proxy FresCmd FresData () FresData App ()
 stateProxy dat = do
-    --get >>= liftIO.print
+    get >>= liftIO.print
     let ack = prependCommand AckTx
     let ready = modify (\s -> s { _readyToSend = True })
     case dat of
@@ -250,7 +231,7 @@ stateProxy dat = do
                             yield dat
     seentime <- gets _timeLastSeen
     enumtime <- gets _timeLastEnum
-    curtime <- liftIO $ getPOSIXTime
+    curtime <- liftIO getPOSIXTime
     -- No news for more than 10s? We are no longer connected
     when (curtime - seentime > 10) $ put defaultState { _timeLastSeen = curtime,
                                                         _commands = [ConnectBase]
@@ -269,7 +250,7 @@ runPipe :: SysIO.Handle -> IO ()
 runPipe handle = do
     curtime <- getPOSIXTime
     let initState = defaultState { _timeLastEnum = curtime }
-    (runApp $ runEffect $ pipeline handle) `evalStateT` initState
+    runApp (runEffect $ pipeline handle) `evalStateT` initState
 
 main :: IO ()
 main = do
