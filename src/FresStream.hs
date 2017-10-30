@@ -7,17 +7,18 @@ module Main where
 
 import Prelude hiding (takeWhile)
 
---import Common (linesFromHandleForever, withSerial, zmqConsumer, parseForever, encodeToMsgPack, getConfigFor, dropLog)
-import Common (withSerial, getConfigFor)
+import Common (withSerial, zmqConsumer, encodeToMsgPack, getConfigFor)
 
 import           Numeric (showHex)
 
 import           Control.Applicative
+import           Control.Monad (forever)
 import           Control.Monad.State
 --import           Control.Lens
 
 import qualified System.IO as SysIO
 import qualified System.Hardware.Serialport as S
+--import qualified System.ZMQ4 as Z
 
 import           Data.Char (ord, toUpper)
 import           Data.Attoparsec.Text
@@ -30,12 +31,12 @@ import qualified Data.HashMap as HM
 import           Data.Time.Clock.POSIX
 import           Data.List ((\\), uncons)
 import           Data.Bits (testBit)
+import qualified Data.MessagePack as M
 
 import           Pipes
 import           Pipes.Core
 import qualified Pipes.Prelude as P
---import qualified Pipes.Parse as PP
---import qualified Pipes.Attoparsec as PA
+--import qualified Pipes.Text.IO as PT
 
 type Syringe = Int
 type Volume  = Float
@@ -133,8 +134,8 @@ fresParser =
 parseFrame :: Parser FresData
 parseFrame = do
     char '\STX'
-    body <- parseSyringeEnum <|>
-            parseVolEvent    <|>
+    body <- parseVolEvent    <|>
+            parseSyringeEnum <|>
             parseCorrect     <|>
             parseIncorrect
     char '\ETX'
@@ -160,38 +161,29 @@ parseVolEvent = do
     return $ VolEvent syringe (fromIntegral volume / 1000)
 
 ioHandler :: SysIO.Handle -> Server FresCmd Text App ()
-ioHandler handle = do
+ioHandler handle = forever $ do
     txt <- liftIO (T.hGetChunk handle)
-    liftIO $ print ("<- " <> txt)
-
-    curtime <- liftIO getPOSIXTime
-    let isnull = T.null txt
-    unless isnull $ modify (\s -> s { _timeLastSeen = curtime })
-
     let (needKeepAlive, txt') = scanKeepAlive txt
     when needKeepAlive (liftIO $ sendCommand handle KeepAlive)
     cmd <- respond txt'
-
     case cmd of
         Nop           -> return ()
         AckTx         -> liftIO $ sendCommand handle cmd
         AckVolEvent _ -> liftIO $ sendCommand handle cmd
         _             -> do liftIO $ sendCommand handle cmd
                             modify (\s -> s { _readyToSend = False})
-    ioHandler handle
 
-parseProxy :: (MonadIO m, Show b) => Parser b -> Text -> Proxy a Text a (Maybe b) m ()
+parseProxy :: (Monad m) => Parser b -> Text -> Proxy a Text a (Maybe b) m ()
 parseProxy parser = goNew
   where
     goNew input = decideNext $ parse parser input
     goPart cont input = decideNext $ feed cont input
     reqWith dat = respond dat >>= request
-    printErr err = liftIO $ SysIO.hPrint SysIO.stderr err
     decideNext result =
         case result of
             Done r d   -> reqWith (Just d) >>= goNew.(r <>)
             Partial _  -> reqWith Nothing >>= goPart result
-            Fail _ _ _ -> printErr result >> reqWith Nothing >>= goNew
+            Fail _ _ _ -> reqWith Nothing >>= goNew
 
 prependCommand :: (MonadState CommState m) => FresCmd -> m ()
 prependCommand cmd = do {xs <- gets _commands; modify (\s -> s { _commands = cmd:xs })}
@@ -216,23 +208,23 @@ connectNewSyringes newlist = do
 
 stateProxy :: (Maybe FresData) -> Proxy FresCmd (Maybe FresData) () FresData App ()
 stateProxy dat = do
-    get >>= liftIO.print
+    curtime <- liftIO getPOSIXTime
     let ack = prependCommand AckTx
     let ready = modify (\s -> s { _readyToSend = True })
+    let seen = modify (\s -> s { _timeLastSeen = curtime })
     let dat' = fromMaybe NoData dat
     case dat' of
         NoData        -> return ()
         AckRx         -> return ()
         NakRx         -> ready
-        Correct       -> ack >> ready
+        Correct       -> seen >> ack >> ready
         Incorrect     -> ack >> ready
-        SyringeEnum s -> ack >> ready >> connectNewSyringes s
+        SyringeEnum s -> seen >> ack >> ready >> connectNewSyringes s
         VolEvent s _  -> do prependCommand (AckVolEvent s)
-                            ack >> ready
+                            seen >> ack >> ready
                             yield dat'
     seentime <- gets _timeLastSeen
     enumtime <- gets _timeLastEnum
-    curtime <- liftIO getPOSIXTime
     -- No news for more than 10s? We are no longer connected
     when (curtime - seentime > 10) $ put defaultState { _timeLastSeen = curtime,
                                                         _commands = [ConnectBase]
@@ -240,9 +232,14 @@ stateProxy dat = do
     -- Update list of connected syringes every 5s.
     when (curtime - enumtime > 5) $ do modify (\s -> s { _timeLastEnum = curtime})
                                        appendCommand EnumSyringes
+    --get >>= liftIO.print --DEBUG
     isready <- gets _readyToSend
     cmd <- if isready then popCommand else return Nop
     request cmd >>= stateProxy
+
+fresMsgPack :: FresData -> M.Assoc [(String, M.Object)]
+fresMsgPack (VolEvent s vol) = M.Assoc [(show s, M.toObject vol)]
+fresMsgPack _                = M.Assoc [("error", M.ObjectNil)]
 
 pipeline :: SysIO.Handle -> Effect App ()
 pipeline handle = ioHandler handle >>~ parseProxy fresParser >>~ stateProxy >-> P.print
