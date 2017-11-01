@@ -7,7 +7,8 @@ module Main where
 
 import Prelude hiding (takeWhile)
 
-import Common (withSerial, zmqConsumer, encodeToMsgPack, getConfigFor)
+--import Common (withSerial, zmqConsumer, encodeToMsgPack, getConfigFor)
+import Common (withSerial, getConfigFor)
 
 import           Numeric (showHex)
 
@@ -15,28 +16,27 @@ import           Control.Applicative
 import           Control.Monad (forever)
 import           Control.Monad.State
 --import           Control.Lens
+import           Control.Concurrent (forkIO)
+import           Control.Concurrent.STM
 
 import qualified System.IO as SysIO
 import qualified System.Hardware.Serialport as S
---import qualified System.ZMQ4 as Z
 
-import           Data.Char (ord, toUpper)
-import           Data.Attoparsec.Text
-import           Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
-import           Data.Monoid ((<>))
-import           Data.Maybe (fromMaybe, catMaybes)
-import qualified Data.HashMap as HM
-import           Data.Time.Clock.POSIX
-import           Data.List ((\\), uncons)
+import           Data.Attoparsec.ByteString.Char8
 import           Data.Bits (testBit)
+import           Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
+import           Data.Char (ord, toUpper)
+import qualified Data.HashMap as HM
+import           Data.List ((\\), uncons)
+import           Data.Maybe (fromMaybe)
 import qualified Data.MessagePack as M
+import           Data.Monoid ((<>))
+import           Data.Time.Clock.POSIX
 
 import           Pipes
 import           Pipes.Core
 import qualified Pipes.Prelude as P
---import qualified Pipes.Text.IO as PT
 
 type Syringe = Int
 type Volume  = Float
@@ -80,19 +80,19 @@ newtype App a = App {
 fresSerialSettings :: S.SerialPortSettings
 fresSerialSettings = S.SerialPortSettings S.CS19200 7 S.One S.Even S.NoFlowControl 1
 
-generateChecksum :: Text -> Text
+generateChecksum :: ByteString -> ByteString
 generateChecksum msg =
     let 
-        sall = sum $ ord <$> T.unpack msg
+        sall = sum $ ord <$> B.unpack msg
         low = rem sall 0x100
         checksum = 0xFF - low
     in
-        T.pack $ toUpper <$> showHex checksum ""
+        B.pack $ toUpper <$> showHex checksum ""
 
-generateFrame :: Text -> Text
+generateFrame :: ByteString -> ByteString
 generateFrame msg = "\STX" <> msg <> generateChecksum msg <> "\ETX"
 
-buildMessage :: FresCmd -> Text
+buildMessage :: FresCmd -> ByteString
 buildMessage cmd =
     case cmd of
         Nop           -> ""
@@ -105,25 +105,10 @@ buildMessage cmd =
         Subscribe s   -> assemble s "DE;r"
         AckVolEvent s -> assemble s "E"
     where
-        assemble syringe msg = generateFrame $ (T.pack . show) syringe <> msg
+        assemble syringe msg = generateFrame $ (B.pack . show) syringe <> msg
 
 sendCommand :: SysIO.Handle -> FresCmd -> IO ()
-sendCommand h c = T.hPutStr h (buildMessage c)
-
--- | Scan the text for the 'ENQ' caracter. Strip out the 'ENQ' caracter
--- from the text and return a keep-alive request indicator as well as
--- the stripped text.
-scanKeepAlive :: Text -> (Bool, Text)
-scanKeepAlive txt = 
-    let (reqtx, pretxt) = unzip (fstpass txt)
-    in (or reqtx, T.pack $ catMaybes pretxt)
-  where
-    fstpass :: Text -> [(Bool, Maybe Char)]
-    fstpass txt = case T.uncons txt of
-                       Nothing     -> []
-                       Just (h, t) -> testChar h : fstpass t
-    testChar '\ENQ' = (True, Nothing)
-    testChar c = (False, Just c)
+sendCommand h c = B.hPutStr h (buildMessage c)
 
 fresParser :: Parser FresData
 fresParser = 
@@ -160,12 +145,15 @@ parseVolEvent = do
     let (volume, _) = quotRem hexval 0x100 -- rem is checksum
     return $ VolEvent syringe (fromIntegral volume / 1000)
 
-ioHandler :: SysIO.Handle -> Server FresCmd Text App ()
-ioHandler handle = forever $ do
-    txt <- liftIO (T.hGetChunk handle)
-    let (needKeepAlive, txt') = scanKeepAlive txt
-    when needKeepAlive (liftIO $ sendCommand handle KeepAlive)
-    cmd <- respond txt'
+ioBufferProvider :: TVar ByteString -> Producer ByteString App ()
+ioBufferProvider buf = do
+    val <- liftIO.atomically $ swapTVar buf ""
+    yield val
+
+cmdHandler :: SysIO.Handle -> Proxy () ByteString FresCmd ByteString App ()
+cmdHandler handle = forever $ do
+    txt <- await
+    cmd <- respond txt
     case cmd of
         Nop           -> return ()
         AckTx         -> liftIO $ sendCommand handle cmd
@@ -173,7 +161,7 @@ ioHandler handle = forever $ do
         _             -> do liftIO $ sendCommand handle cmd
                             modify (\s -> s { _readyToSend = False})
 
-parseProxy :: (Monad m) => Parser b -> Text -> Proxy a Text a (Maybe b) m ()
+parseProxy :: (Monad m) => Parser b -> ByteString -> Proxy a ByteString a (Maybe b) m ()
 parseProxy parser = goNew
   where
     goNew input = decideNext $ parse parser input
@@ -241,14 +229,23 @@ fresMsgPack :: FresData -> M.Assoc [(String, M.Object)]
 fresMsgPack (VolEvent s vol) = M.Assoc [(show s, M.toObject vol)]
 fresMsgPack _                = M.Assoc [("error", M.ObjectNil)]
 
-pipeline :: SysIO.Handle -> Effect App ()
-pipeline handle = ioHandler handle >>~ parseProxy fresParser >>~ stateProxy >-> P.print
+pipeline :: TVar ByteString -> SysIO.Handle -> Effect App ()
+pipeline buf handle = ioBufferProvider buf >-> cmdHandler handle >>~ parseProxy fresParser >>~ stateProxy >-> P.print
 
 runPipe :: SysIO.Handle -> IO ()
 runPipe handle = do
+    buf <- newTVarIO ""
+    forkIO $ ioBufferFiller handle buf
     curtime <- getPOSIXTime
     let initState = defaultState { _timeLastEnum = curtime }
-    runApp (runEffect $ pipeline handle) `evalStateT` initState
+    runApp (runEffect $ pipeline buf handle) `evalStateT` initState
+
+ioBufferFiller :: SysIO.Handle -> TVar ByteString -> IO ()
+ioBufferFiller h buf = forever $ do
+    c <- SysIO.hGetChar h
+    case c of
+        '\ENQ' -> sendCommand h KeepAlive
+        _      -> atomically $ modifyTVar' buf (`B.snoc` c)
 
 main :: IO ()
 main = do

@@ -54,11 +54,11 @@ executable fresstream
     other-modules:       Common
     other-extensions:    TemplateHaskell
     build-depends:       base, serialport, lens, zeromq4-haskell,
-                         bytestring, text, mtl,
+                         bytestring, text, mtl, stm,
                          time, attoparsec, data-msgpack,
                          pipes, pipes-attoparsec, pipes-parse,
                          pipes-text, pipes-zeromq4,
                          directory, hashmap, ConfigFile
     hs-source-dirs:      src
     default-language:    Haskell2010
-    ghc-options:         -W
+    ghc-options:         -W -threaded
