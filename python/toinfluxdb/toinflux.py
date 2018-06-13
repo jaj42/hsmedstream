@@ -2,8 +2,6 @@ import asyncio
 import zmq
 import zmq.asyncio
 import msgpack
-import time
-from decimal import Decimal
 import pandas as pd
 
 zmqhost = '127.0.0.1'
@@ -17,32 +15,22 @@ influxport = 8089
 
 def run():
     loop = asyncio.get_event_loop()
+    queue = asyncio.Queue(loop=loop)
 
-    numq = asyncio.Queue(loop=loop)
-    asyncio.ensure_future(recvFromZmq(loop, numq, zmqhost, numport))
-    asyncio.ensure_future(sendToInfluxdb(loop, numq, influxhost, influxport, numEncode))
+    ctx = zmq.asyncio.Context()
+    asyncio.ensure_future(recvFromZmq(loop, ctx, queue, zmqhost, numport, numEncode))
+    asyncio.ensure_future(recvFromZmq(loop, ctx, queue, zmqhost, wavport, wavEncode))
 
-    wavq = asyncio.Queue(loop=loop)
-    asyncio.ensure_future(recvFromZmq(loop, wavq, zmqhost, wavport))
-    asyncio.ensure_future(sendToInfluxdb(loop, wavq, influxhost, influxport, wavEncode))
-
+    asyncio.ensure_future(sendToInfluxdb(loop, queue, influxhost, influxport))
     loop.run_forever()
 
-async def recvFromZmq(loop, queue, host, port):
-    ctx = zmq.asyncio.Context()
+async def recvFromZmq(loop, ctx, queue, host, port, encoder):
     sock = ctx.socket(zmq.SUB, io_loop=loop)
     #sock.connect(f'tcp://{host}:{port}')
     sock.bind(f'tcp://{host}:{port}')
     sock.subscribe(b'')
     while loop.is_running():
         msg = await sock.recv()
-        await queue.put(msg)
-
-async def sendToInfluxdb(loop, queue, host, port, encoder):
-    udpproto = lambda: asyncio.DatagramProtocol()
-    transport, proto = await loop.create_datagram_endpoint(udpproto, remote_addr=(host, port))
-    while loop.is_running():
-        msg = await queue.get()
         print(f'Received {msg}')
         try:
             decoded = decodeMsg(msg)
@@ -50,6 +38,13 @@ async def sendToInfluxdb(loop, queue, host, port, encoder):
         except ValueError:
             print(f'Failed to parse: {msg}')
             continue
+        await queue.put(line)
+
+async def sendToInfluxdb(loop, queue, host, port):
+    udpproto = lambda: asyncio.DatagramProtocol()
+    transport, proto = await loop.create_datagram_endpoint(udpproto, remote_addr=(host, port))
+    while loop.is_running():
+        line = await queue.get()
         print(f'Sending: {line}')
         transport.sendto(line)
     transport.close()
