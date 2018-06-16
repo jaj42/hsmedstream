@@ -34,19 +34,19 @@ async def recvFromZmq(loop, ctx, queue, host, port, encoder):
         print(f'Received {msg}')
         try:
             decoded = decodeMsg(msg)
-            line = encoder(decoded)
+            request = encoder(decoded)
         except ValueError:
             print(f'Failed to parse: {msg}')
             continue
-        await queue.put(line)
+        await queue.put(request)
 
 async def sendToInfluxdb(loop, queue, host, port):
     udpproto = lambda: asyncio.DatagramProtocol()
     transport, proto = await loop.create_datagram_endpoint(udpproto, remote_addr=(host, port))
     while loop.is_running():
-        line = await queue.get()
-        print(f'Sending: {line}')
-        transport.sendto(line)
+        request = await queue.get()
+        print(f'Sending: {request}')
+        transport.sendto(request)
     transport.close()
 
 def decodeMsg(msg, wave=False):
@@ -86,8 +86,8 @@ def wavEncode(frame):
         str_fields = ','.join(fields)
         line = f'waves,{str_tags} {str_fields} {time}'
         lines.append(line)
-    lineagg = '\n'.join(lines)
-    return lineagg.encode('ASCII')
+    request = '\n'.join(lines)
+    return request.encode('ASCII')
 
 
 if __name__ == "__main__":

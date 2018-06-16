@@ -20,6 +20,7 @@ import           Control.Concurrent (forkIO)
 import           Control.Concurrent.STM
 
 import qualified System.IO as SysIO
+import           System.IO.Error (catchIOError, isEOFError)
 import qualified System.Hardware.Serialport as S
 
 import           Data.Attoparsec.ByteString.Char8
@@ -146,8 +147,8 @@ parseVolEvent = do
     return $ VolEvent syringe (fromIntegral volume / 1000)
 
 ioBufferProvider :: TVar ByteString -> Producer ByteString App ()
-ioBufferProvider buf = do
-    val <- liftIO.atomically $ swapTVar buf ""
+ioBufferProvider buf = forever $ do
+    val <- liftIO.atomically $ swapTVar buf B.empty
     yield val
 
 cmdHandler :: SysIO.Handle -> Proxy () ByteString FresCmd ByteString App ()
@@ -234,7 +235,7 @@ pipeline buf handle = ioBufferProvider buf >-> cmdHandler handle >>~ parseProxy 
 
 runPipe :: SysIO.Handle -> IO ()
 runPipe handle = do
-    buf <- newTVarIO ""
+    buf <- newTVarIO B.empty
     forkIO $ ioBufferFiller handle buf
     curtime <- getPOSIXTime
     let initState = defaultState { _timeLastEnum = curtime }
@@ -242,10 +243,13 @@ runPipe handle = do
 
 ioBufferFiller :: SysIO.Handle -> TVar ByteString -> IO ()
 ioBufferFiller h buf = forever $ do
-    c <- SysIO.hGetChar h
-    case c of
-        '\ENQ' -> sendCommand h KeepAlive
-        _      -> atomically $ modifyTVar' buf (`B.snoc` c)
+    catchIOError (appendToBuf h buf) (\e -> if isEOFError e then return () else ioError e)
+  where
+    appendToBuf h buf = do
+        c <- SysIO.hGetChar h
+        case c of
+            '\ENQ' -> sendCommand h KeepAlive
+            _      -> atomically $ modifyTVar' buf (`B.snoc` c)
 
 main :: IO ()
 main = do
