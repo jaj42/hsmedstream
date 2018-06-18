@@ -59,9 +59,9 @@ def decodeMsg(msg, wave=False):
 
 def numEncode(frame):
     # Encode numerics for InfluxDB
-    metadata = frame['meta'].copy()
-    metadata['origin'] = frame['topic']
-    tags = [f"{tag}={value}" for tag, value in metadata.items()]
+    tagdata = frame['tags'].copy()
+    tagdata['origin'] = frame['topic']
+    tags = [f"{tag}={value}" for tag, value in tagdata.items()]
     str_tags = ','.join(tags)
     data = frame['data']
     fields = [f"{field}={value}" for field, value in data.items()]
@@ -72,9 +72,9 @@ def numEncode(frame):
 
 def wavEncode(frame):
     # Encode waves for InfluxDB
-    metadata = frame['meta'].copy()
-    metadata['origin'] = frame['topic']
-    tags = [f"{tag}={value}" for tag, value in metadata.items()]
+    tagdata = frame['tags'].copy()
+    tagdata['origin'] = frame['topic']
+    tags = [f"{tag}={value}" for tag, value in tagdata.items()]
     str_tags = ','.join(tags)
     #basetime = frame['basetime']
     wavedata = pd.DataFrame(frame['data']).set_index('time')
