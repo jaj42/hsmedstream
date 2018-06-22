@@ -10,11 +10,12 @@ import infupy.backends.fresenius as fresenius
 
 zmqhost = '127.0.0.1'
 zmqport = 4201
-freseniusport = 'COM5'
+freseniusport = 'COM6'
 
 def stateWorker(stopevent):
     context = zmq.Context()
     zmqsocket = context.socket(zmq.PUB)
+    zmqsocket.connect(f'tcp://{zmqhost}:{zmqport}')
     comm = fresenius.FreseniusComm(freseniusport)
     base = fresenius.FreseniusBase(comm)
 
