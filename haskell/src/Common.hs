@@ -21,6 +21,7 @@ import           Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.MessagePack as M
 import qualified Data.ConfigFile as CF
 import qualified Data.HashMap as HM
+import           Data.Monoid ((<>))
 
 import           Pipes
 import qualified Pipes.Prelude as P
@@ -66,7 +67,7 @@ parseForever parser inflow = do
 
 encodeToMsgPack :: (MonadIO m, M.MessagePack b) => B.ByteString -> (a -> b) -> Pipe a B.ByteString m ()
 encodeToMsgPack prefix preprocess = P.map $ \dat
-    -> foldl B.append B.empty [prefix, " ", BL.toStrict . M.pack . preprocess $ dat]
+    -> prefix <> " " <> (BL.toStrict . M.pack . preprocess $ dat)
 
 getConfigFor :: CF.SectionSpec -> IO (HM.Map String String)
 getConfigFor section = do
