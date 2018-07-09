@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE FlexibleContexts #-}
---{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Main where
 
@@ -15,9 +15,10 @@ import           Numeric (showHex)
 import           Control.Applicative
 import           Control.Monad (forever)
 import           Control.Monad.State
---import           Control.Lens
 import           Control.Concurrent (forkIO)
 import           Control.Concurrent.STM
+
+import           Control.Lens hiding (uncons)
 
 import qualified System.IO as SysIO
 import           System.IO.Error (catchIOError, isEOFError)
@@ -71,7 +72,7 @@ data CommState = CommState {
 }
     deriving (Show)
 
---makeLenses ''CommState
+makeLenses ''CommState
 defaultState = CommState True 0 0 [] []
 
 newtype App a = App {
@@ -160,7 +161,7 @@ cmdHandler handle = forever $ do
         AckTx         -> liftIO $ sendCommand handle cmd
         AckVolEvent _ -> liftIO $ sendCommand handle cmd
         _             -> do liftIO $ sendCommand handle cmd
-                            modify (\s -> s { _readyToSend = False})
+                            readyToSend .= False
 
 parseProxy :: (Monad m) => Parser b -> ByteString -> Proxy a ByteString a (Maybe b) m ()
 parseProxy parser = goNew
@@ -175,32 +176,34 @@ parseProxy parser = goNew
             Fail _ _ _ -> reqWith Nothing >>= goNew
 
 prependCommand :: (MonadState CommState m) => FresCmd -> m ()
-prependCommand cmd = do {xs <- gets _commands; modify (\s -> s { _commands = cmd:xs })}
+prependCommand cmd = do
+    xs <- use commands
+    commands .= cmd:xs
 
 appendCommand :: (MonadState CommState m) => FresCmd -> m ()
-appendCommand cmd = do {xs <- gets _commands; modify (\s -> s { _commands = xs ++ [cmd] })}
+appendCommand cmd = commands %= flip (++) [cmd]
 
 popCommand :: (MonadState CommState m) => m FresCmd
 popCommand = do
-    cmdlist <- gets _commands;
+    cmdlist <- use commands
     let (cmd, cmds) = fromMaybe (Nop, []) (uncons cmdlist)
-    modify (\s -> s { _commands = cmds })
+    commands .= cmds
     return cmd
 
 connectNewSyringes :: (MonadState CommState m, MonadIO m) => [Syringe] -> m ()
 connectNewSyringes newlist = do
-    oldlist <- gets _syringes
+    oldlist <- use syringes
     let newsyringes = newlist \\ oldlist
     forM_ newsyringes (appendCommand.Connect)
     forM_ newlist (appendCommand.Subscribe)
-    modify (\s -> s { _syringes = newlist})
+    syringes .= newlist
 
 stateProxy :: (Maybe FresData) -> Proxy FresCmd (Maybe FresData) () FresData App ()
 stateProxy dat = do
     curtime <- liftIO getPOSIXTime
     let ack = prependCommand AckTx
-    let ready = modify (\s -> s { _readyToSend = True })
-    let seen = modify (\s -> s { _timeLastSeen = curtime })
+    let ready = readyToSend .= True
+    let seen = timeLastSeen .= curtime
     let dat' = fromMaybe NoData dat
     case dat' of
         NoData        -> return ()
@@ -212,17 +215,17 @@ stateProxy dat = do
         VolEvent s _  -> do prependCommand (AckVolEvent s)
                             seen >> ack >> ready
                             yield dat'
-    seentime <- gets _timeLastSeen
-    enumtime <- gets _timeLastEnum
+    seentime <- use timeLastSeen
+    enumtime <- use timeLastEnum
     -- No news for more than 10s? We are no longer connected
     when (curtime - seentime > 10) $ put defaultState { _timeLastSeen = curtime,
                                                         _commands = [ConnectBase]
                                                       }
     -- Update list of connected syringes every 5s.
-    when (curtime - enumtime > 5) $ do modify (\s -> s { _timeLastEnum = curtime})
+    when (curtime - enumtime > 5) $ do timeLastEnum .= curtime
                                        appendCommand EnumSyringes
     --get >>= liftIO.print --DEBUG
-    isready <- gets _readyToSend
+    isready <- use readyToSend
     cmd <- if isready then popCommand else return Nop
     request cmd >>= stateProxy
 
