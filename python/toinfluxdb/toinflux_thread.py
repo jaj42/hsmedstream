@@ -83,10 +83,10 @@ def numEncode(frame):
     # Encode numerics for InfluxDB
     tagdata = frame['tags'].copy()
     tagdata['origin'] = frame['topic']
-    tags = [f"{tag}={value}" for tag, value in tagdata.items()]
+    tags = [f'{tag}={value}' for tag, value in tagdata.items()]
     str_tags = ','.join(tags)
     data = frame['data']
-    fields = [f"{field}={value}" for field, value in data.items()]
+    fields = [f'{field}={value}' for field, value in data.items()]
     str_fields = ','.join(fields)
     time = frame['basetime']
     line = f'numerics,{str_tags} {str_fields} {time}'
