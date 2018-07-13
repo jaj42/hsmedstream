@@ -147,6 +147,8 @@ parseVolEvent = do
     let (volume, _) = quotRem hexval 0x100 -- rem is checksum
     return $ VolEvent syringe (fromIntegral volume / 1000)
 
+ioHandler :: S.SerialPort -> Proxy FresCmd (Maybe FresData) () FresData App ()
+
 cmdHandler :: S.SerialPort -> Proxy () ByteString FresCmd ByteString App ()
 cmdHandler handle = forever $ do
     txt <- await
@@ -169,27 +171,6 @@ parseProxy parser = goNew
             Done r d   -> reqWith (Just d) >>= goNew.(r <>)
             Partial{}  -> reqWith Nothing >>= goPart result
             Fail{}     -> reqWith Nothing >>= goNew
-
-prependCommand :: (MonadState CommState m) => FresCmd -> m ()
-prependCommand cmd = commands %= (:) cmd
-
-appendCommand :: (MonadState CommState m) => FresCmd -> m ()
-appendCommand cmd = commands %= flip (++) [cmd]
-
-popCommand :: (MonadState CommState m) => m FresCmd
-popCommand = do
-    cmdlist <- use commands
-    let (cmd, cmds) = fromMaybe (Nop, []) (uncons cmdlist)
-    commands .= cmds
-    return cmd
-
-connectNewSyringes :: (MonadState CommState m, MonadIO m) => [Syringe] -> m ()
-connectNewSyringes newlist = do
-    oldlist <- use syringes
-    let newsyringes = newlist \\ oldlist
-    forM_ newsyringes (appendCommand.Connect)
-    forM_ newlist (appendCommand.Subscribe)
-    syringes .= newlist
 
 stateProxy :: Maybe FresData -> Proxy FresCmd (Maybe FresData) () FresData App ()
 stateProxy dat = do
@@ -222,6 +203,27 @@ stateProxy dat = do
     cmd <- if isready then popCommand else return Nop
     --liftIO.print $ (isready, cmd) --DEBUG
     request cmd >>= stateProxy
+
+prependCommand :: (MonadState CommState m) => FresCmd -> m ()
+prependCommand cmd = commands %= (:) cmd
+
+appendCommand :: (MonadState CommState m) => FresCmd -> m ()
+appendCommand cmd = commands %= flip (++) [cmd]
+
+popCommand :: (MonadState CommState m) => m FresCmd
+popCommand = do
+    cmdlist <- use commands
+    let (cmd, cmds) = fromMaybe (Nop, []) (uncons cmdlist)
+    commands .= cmds
+    return cmd
+
+connectNewSyringes :: (MonadState CommState m, MonadIO m) => [Syringe] -> m ()
+connectNewSyringes newlist = do
+    oldlist <- use syringes
+    let newsyringes = newlist \\ oldlist
+    forM_ newsyringes (appendCommand.Connect)
+    forM_ newlist (appendCommand.Subscribe)
+    syringes .= newlist
 
 ioBufferProvider :: TVar ByteString -> Producer ByteString App ()
 ioBufferProvider buf = forever $ do
