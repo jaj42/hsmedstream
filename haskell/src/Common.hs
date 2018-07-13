@@ -36,6 +36,9 @@ type DevPath = String
 withSerial :: DevPath -> S.SerialPortSettings -> (SysIO.Handle -> IO a) -> IO a
 withSerial dev settings = Ex.bracket (S.hOpenSerial dev settings) SysIO.hClose
 
+withBSerial :: DevPath -> S.SerialPortSettings -> (S.SerialPort -> IO a) -> IO a
+withBSerial dev settings = Ex.bracket (S.openSerial dev settings) S.closeSerial
+
 fromHandleForever :: MonadIO m => SysIO.Handle -> Producer Text m ()
 fromHandleForever h = forever go
   where

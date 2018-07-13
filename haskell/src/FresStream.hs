@@ -8,12 +8,12 @@ module Main where
 import Prelude hiding (takeWhile)
 
 --import Common (withSerial, zmqConsumer, encodeToMsgPack, getConfigFor)
-import Common (withSerial, getConfigFor)
+import Common (withBSerial, getConfigFor)
 
 import           Numeric (showHex)
 
 import           Control.Applicative
-import           Control.Monad (forever)
+import           Control.Monad (forever, unless)
 import           Control.Monad.State
 import           Control.Concurrent (forkIO)
 import           Control.Concurrent.STM
@@ -109,8 +109,8 @@ buildMessage cmd =
     where
         assemble syringe msg = generateFrame $ (B.pack . show) syringe <> msg
 
-sendCommand :: SysIO.Handle -> FresCmd -> IO ()
-sendCommand h c = B.hPutStr h (buildMessage c)
+sendCommand :: S.SerialPort -> FresCmd -> IO ()
+sendCommand h c = void $ S.send h (buildMessage c)
 
 fresParser :: Parser FresData
 fresParser = 
@@ -147,12 +147,7 @@ parseVolEvent = do
     let (volume, _) = quotRem hexval 0x100 -- rem is checksum
     return $ VolEvent syringe (fromIntegral volume / 1000)
 
-ioBufferProvider :: TVar ByteString -> Producer ByteString App ()
-ioBufferProvider buf = forever $ do
-    val <- liftIO.atomically $ swapTVar buf B.empty
-    yield val
-
-cmdHandler :: SysIO.Handle -> Proxy () ByteString FresCmd ByteString App ()
+cmdHandler :: S.SerialPort -> Proxy () ByteString FresCmd ByteString App ()
 cmdHandler handle = forever $ do
     txt <- await
     cmd <- respond txt
@@ -172,13 +167,11 @@ parseProxy parser = goNew
     decideNext result =
         case result of
             Done r d   -> reqWith (Just d) >>= goNew.(r <>)
-            Partial _  -> reqWith Nothing >>= goPart result
-            Fail _ _ _ -> reqWith Nothing >>= goNew
+            Partial{}  -> reqWith Nothing >>= goPart result
+            Fail{}     -> reqWith Nothing >>= goNew
 
 prependCommand :: (MonadState CommState m) => FresCmd -> m ()
-prependCommand cmd = do
-    xs <- use commands
-    commands .= cmd:xs
+prependCommand cmd = commands %= (:) cmd
 
 appendCommand :: (MonadState CommState m) => FresCmd -> m ()
 appendCommand cmd = commands %= flip (++) [cmd]
@@ -198,7 +191,7 @@ connectNewSyringes newlist = do
     forM_ newlist (appendCommand.Subscribe)
     syringes .= newlist
 
-stateProxy :: (Maybe FresData) -> Proxy FresCmd (Maybe FresData) () FresData App ()
+stateProxy :: Maybe FresData -> Proxy FresCmd (Maybe FresData) () FresData App ()
 stateProxy dat = do
     curtime <- liftIO getPOSIXTime
     let ack = prependCommand AckTx
@@ -224,19 +217,36 @@ stateProxy dat = do
     -- Update list of connected syringes every 5s.
     when (curtime - enumtime > 5) $ do timeLastEnum .= curtime
                                        appendCommand EnumSyringes
-    --get >>= liftIO.print --DEBUG
+    get >>= liftIO.print --DEBUG
     isready <- use readyToSend
     cmd <- if isready then popCommand else return Nop
+    --liftIO.print $ (isready, cmd) --DEBUG
     request cmd >>= stateProxy
+
+ioBufferProvider :: TVar ByteString -> Producer ByteString App ()
+ioBufferProvider buf = forever $ do
+    val <- liftIO.atomically $ swapTVar buf B.empty
+    yield val
+
+ioBufferFiller :: S.SerialPort -> TVar ByteString -> IO ()
+ioBufferFiller h buf = forever
+    catchIOError (appendToBuf h buf) (\e -> unless (isEOFError e) $ ioError e)
+  where
+    appendToBuf h buf = do
+        c <- S.recv h 1
+        print c
+        case c of
+            "\ENQ" -> sendCommand h KeepAlive
+            _      -> atomically $ modifyTVar' buf (`B.append` c)
 
 fresMsgPack :: FresData -> M.Assoc [(String, M.Object)]
 fresMsgPack (VolEvent s vol) = M.Assoc [(show s, M.toObject vol)]
 fresMsgPack _                = M.Assoc [("error", M.ObjectNil)]
 
-pipeline :: TVar ByteString -> SysIO.Handle -> Effect App ()
+pipeline :: TVar ByteString -> S.SerialPort -> Effect App ()
 pipeline buf handle = ioBufferProvider buf >-> cmdHandler handle >>~ parseProxy fresParser >>~ stateProxy >-> P.print
 
-runPipe :: SysIO.Handle -> IO ()
+runPipe :: S.SerialPort -> IO ()
 runPipe handle = do
     buf <- newTVarIO B.empty
     forkIO $ ioBufferFiller handle buf
@@ -244,19 +254,10 @@ runPipe handle = do
     let initState = defaultState { _timeLastEnum = curtime }
     runApp (runEffect $ pipeline buf handle) `evalStateT` initState
 
-ioBufferFiller :: SysIO.Handle -> TVar ByteString -> IO ()
-ioBufferFiller h buf = forever $ do
-    catchIOError (appendToBuf h buf) (\e -> if isEOFError e then return () else ioError e)
-  where
-    appendToBuf h buf = do
-        c <- SysIO.hGetChar h
-        case c of
-            '\ENQ' -> sendCommand h KeepAlive
-            _      -> atomically $ modifyTVar' buf (`B.snoc` c)
-
 main :: IO ()
 main = do
     config <- getConfigFor "fres"
     case "device" `HM.lookup` config of
-         Just devpath -> withSerial devpath fresSerialSettings runPipe
          Nothing      -> ioError $ userError "No COM device defined"
+         Just devpath -> do putStrLn ("Connecting to: " <> devpath)
+                            withBSerial devpath fresSerialSettings runPipe
