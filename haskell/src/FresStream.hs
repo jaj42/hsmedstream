@@ -8,30 +8,29 @@ module Main where
 import Prelude hiding (takeWhile)
 
 --import Common (withSerial, zmqConsumer, encodeToMsgPack, getConfigFor)
-import Common (withBSerial, getConfigFor)
+import Common (withSerial, getConfigFor, parseProxy)
 
 import           Numeric (showHex)
 
 import           Control.Applicative
-import           Control.Monad (forever, unless)
+import           Control.Monad (forever)
 import           Control.Monad.State
-import           Control.Concurrent (forkIO)
-import           Control.Concurrent.STM
 
 import           Control.Lens hiding (uncons)
 
 import qualified System.IO as SysIO
-import           System.IO.Error (catchIOError, isEOFError)
 import qualified System.Hardware.Serialport as S
 
-import           Data.Attoparsec.ByteString.Char8
+import           Data.Attoparsec.Text
+import           Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
+
 import           Data.Bits (testBit)
-import           Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
 import           Data.Char (ord, toUpper)
 import qualified Data.HashMap as HM
 import           Data.List ((\\), uncons)
-import           Data.Maybe (fromMaybe)
+import           Data.Maybe (fromMaybe, catMaybes)
 import qualified Data.MessagePack as M
 import           Data.Monoid ((<>))
 import           Data.Time.Clock.POSIX
@@ -79,22 +78,22 @@ newtype App a = App {
     runApp :: (StateT CommState IO) a
 }   deriving (Functor, Applicative, Monad, MonadIO, MonadState CommState)
 
-fresSerialSettings :: S.SerialPortSettings
-fresSerialSettings = S.SerialPortSettings S.CS19200 7 S.One S.Even S.NoFlowControl 1
+fresSerialPortSettings :: S.SerialPortSettings
+fresSerialPortSettings = S.SerialPortSettings S.CS19200 7 S.One S.Even S.NoFlowControl 1
 
-generateChecksum :: ByteString -> ByteString
+generateChecksum :: Text -> Text
 generateChecksum msg =
     let 
-        sall = sum $ ord <$> B.unpack msg
+        sall = sum $ ord <$> T.unpack msg
         low = rem sall 0x100
         checksum = 0xFF - low
     in
-        B.pack $ toUpper <$> showHex checksum ""
+        T.pack $ toUpper <$> showHex checksum ""
 
-generateFrame :: ByteString -> ByteString
+generateFrame :: Text -> Text
 generateFrame msg = "\STX" <> msg <> generateChecksum msg <> "\ETX"
 
-buildMessage :: FresCmd -> ByteString
+buildMessage :: FresCmd -> Text
 buildMessage cmd =
     case cmd of
         Nop           -> ""
@@ -107,10 +106,10 @@ buildMessage cmd =
         Subscribe s   -> assemble s "DE;r"
         AckVolEvent s -> assemble s "E"
     where
-        assemble syringe msg = generateFrame $ (B.pack . show) syringe <> msg
+        assemble syringe msg = generateFrame $ (T.pack . show) syringe <> msg
 
-sendCommand :: S.SerialPort -> FresCmd -> IO ()
-sendCommand h c = void $ S.send h (buildMessage c)
+sendCommand :: SysIO.Handle -> FresCmd -> IO ()
+sendCommand h c = T.hPutStr h (buildMessage c)
 
 fresParser :: Parser FresData
 fresParser = 
@@ -147,30 +146,33 @@ parseVolEvent = do
     let (volume, _) = quotRem hexval 0x100 -- rem is checksum
     return $ VolEvent syringe (fromIntegral volume / 1000)
 
-ioHandler :: S.SerialPort -> Proxy FresCmd (Maybe FresData) () FresData App ()
+--- | Scan the text for the 'ENQ' caracter. Strip out the 'ENQ' caracter
+--- from the text and return a keep-alive request indicator as well as
+--- the stripped text.
+scanKeepAlive :: Text -> (Bool, Text)
+scanKeepAlive txt =
+    let (reqtx, pretxt) = unzip (fstpass txt)
+    in (or reqtx, T.pack $ catMaybes pretxt)
+  where
+    fstpass :: Text -> [(Bool, Maybe Char)]
+    fstpass txt = case T.uncons txt of
+                       Nothing     -> []
+                       Just (h, t) -> testChar h : fstpass t
+    testChar '\ENQ' = (True, Nothing)
+    testChar c = (False, Just c)
 
-cmdHandler :: S.SerialPort -> Proxy () ByteString FresCmd ByteString App ()
-cmdHandler handle = forever $ do
-    txt <- await
-    cmd <- respond txt
+ioHandler :: SysIO.Handle -> Server FresCmd Text App ()
+ioHandler handle = forever $ do
+    txt <- liftIO (T.hGetChunk handle)
+    let (needKeepAlive, txt') = scanKeepAlive txt
+    when needKeepAlive $ liftIO $ sendCommand handle KeepAlive
+    cmd <- respond txt'
     case cmd of
         Nop           -> return ()
         AckTx         -> liftIO $ sendCommand handle cmd
         AckVolEvent _ -> liftIO $ sendCommand handle cmd
         _             -> do liftIO $ sendCommand handle cmd
                             readyToSend .= False
-
-parseProxy :: (Monad m) => Parser b -> ByteString -> Proxy a ByteString a (Maybe b) m ()
-parseProxy parser = goNew
-  where
-    goNew input = decideNext $ parse parser input
-    goPart cont input = decideNext $ feed cont input
-    reqWith dat = respond dat >>= request
-    decideNext result =
-        case result of
-            Done r d   -> reqWith (Just d) >>= goNew.(r <>)
-            Partial{}  -> reqWith Nothing >>= goPart result
-            Fail{}     -> reqWith Nothing >>= goNew
 
 stateProxy :: Maybe FresData -> Proxy FresCmd (Maybe FresData) () FresData App ()
 stateProxy dat = do
@@ -198,10 +200,9 @@ stateProxy dat = do
     -- Update list of connected syringes every 5s.
     when (curtime - enumtime > 5) $ do timeLastEnum .= curtime
                                        appendCommand EnumSyringes
-    get >>= liftIO.print --DEBUG
+    --get >>= liftIO.print --DEBUG
     isready <- use readyToSend
     cmd <- if isready then popCommand else return Nop
-    --liftIO.print $ (isready, cmd) --DEBUG
     request cmd >>= stateProxy
 
 prependCommand :: (MonadState CommState m) => FresCmd -> m ()
@@ -225,36 +226,18 @@ connectNewSyringes newlist = do
     forM_ newlist (appendCommand.Subscribe)
     syringes .= newlist
 
-ioBufferProvider :: TVar ByteString -> Producer ByteString App ()
-ioBufferProvider buf = forever $ do
-    val <- liftIO.atomically $ swapTVar buf B.empty
-    yield val
-
-ioBufferFiller :: S.SerialPort -> TVar ByteString -> IO ()
-ioBufferFiller h buf = forever
-    catchIOError (appendToBuf h buf) (\e -> unless (isEOFError e) $ ioError e)
-  where
-    appendToBuf h buf = do
-        c <- S.recv h 1
-        print c
-        case c of
-            "\ENQ" -> sendCommand h KeepAlive
-            _      -> atomically $ modifyTVar' buf (`B.append` c)
-
 fresMsgPack :: FresData -> M.Assoc [(String, M.Object)]
 fresMsgPack (VolEvent s vol) = M.Assoc [(show s, M.toObject vol)]
 fresMsgPack _                = M.Assoc [("error", M.ObjectNil)]
 
-pipeline :: TVar ByteString -> S.SerialPort -> Effect App ()
-pipeline buf handle = ioBufferProvider buf >-> cmdHandler handle >>~ parseProxy fresParser >>~ stateProxy >-> P.print
+pipeline :: SysIO.Handle -> Effect App ()
+pipeline handle = ioHandler handle >>~ parseProxy fresParser >>~ stateProxy >-> P.print
 
-runPipe :: S.SerialPort -> IO ()
+runPipe :: SysIO.Handle -> IO ()
 runPipe handle = do
-    buf <- newTVarIO B.empty
-    forkIO $ ioBufferFiller handle buf
     curtime <- getPOSIXTime
     let initState = defaultState { _timeLastEnum = curtime }
-    runApp (runEffect $ pipeline buf handle) `evalStateT` initState
+    runApp (runEffect $ pipeline handle) `evalStateT` initState
 
 main :: IO ()
 main = do
@@ -262,4 +245,4 @@ main = do
     case "device" `HM.lookup` config of
          Nothing      -> ioError $ userError "No COM device defined"
          Just devpath -> do putStrLn ("Connecting to: " <> devpath)
-                            withBSerial devpath fresSerialSettings runPipe
+                            withSerial devpath fresSerialPortSettings runPipe

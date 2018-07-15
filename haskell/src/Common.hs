@@ -24,6 +24,7 @@ import qualified Data.HashMap as HM
 import           Data.Monoid ((<>))
 
 import           Pipes
+import           Pipes.Core
 import qualified Pipes.Prelude as P
 import qualified Pipes.Text as PT
 import qualified Pipes.Parse as PP
@@ -57,6 +58,18 @@ dropLog :: (Show a, MonadIO m) => PA.ParsingError -> Pipe a a m ()
 dropLog errmsg = await >>= liftIO.printErr errmsg >> cat
   where
     printErr e s = SysIO.hPutStrLn SysIO.stderr (show e ++ ": " ++ show s)
+
+parseProxy :: (Monad m) => Parser b -> Text -> Proxy a Text a (Maybe b) m ()
+parseProxy parser = goNew
+  where
+    goNew input = decideNext $ parse parser input
+    goPart cont input = decideNext $ feed cont input
+    reqWith dat = respond dat >>= request
+    decideNext result =
+        case result of
+            Done r d   -> reqWith (Just d) >>= goNew.(r <>)
+            Partial{}  -> reqWith Nothing >>= goPart result
+            Fail{}     -> reqWith Nothing >>= goNew
 
 parseForever :: (MonadIO m) => Parser a -> Producer Text m () -> Producer a m ()
 parseForever parser inflow = do
