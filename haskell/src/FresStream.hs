@@ -15,6 +15,7 @@ import           Numeric (showHex)
 import           Control.Applicative
 import           Control.Monad (forever)
 import           Control.Monad.State
+import           Control.Monad.Reader
 
 import           Control.Lens hiding (uncons)
 
@@ -42,6 +43,10 @@ import qualified Pipes.Prelude as P
 type Syringe = Int
 type Volume  = Float
 
+data Config = Config {
+    ioHandle :: SysIO.Handle
+}
+
 data FresCmd = Nop
              | AckTx
              | KeepAlive
@@ -68,16 +73,17 @@ data CommState = CommState {
     _timeLastEnum :: POSIXTime,
     _syringes :: [Syringe],
     _commands :: [FresCmd],
+    _l2commands :: [FresCmd],
     _lastCommand :: FresCmd
 }
     deriving (Show)
 
 makeLenses ''CommState
-defaultState = CommState True 0 0 [] [] Nop
+defaultState = CommState True 0 0 [] [] [] Nop
 
 newtype App a = App {
-    runApp :: (StateT CommState IO) a
-}   deriving (Functor, Applicative, Monad, MonadIO, MonadState CommState)
+    runApp :: (ReaderT Config (StateT CommState IO)) a
+}   deriving (Functor, Applicative, Monad, MonadIO, MonadState CommState, MonadReader Config)
 
 fresSerialPortSettings :: S.SerialPortSettings
 fresSerialPortSettings = S.SerialPortSettings S.CS19200 7 S.One S.Even S.NoFlowControl 1
@@ -109,8 +115,11 @@ buildMessage cmd =
     where
         assemble syringe msg = generateFrame $ (T.pack . show) syringe <> msg
 
-sendCommand :: SysIO.Handle -> FresCmd -> IO ()
-sendCommand h c = T.hPutStr h (buildMessage c)
+
+sendCommand :: (MonadIO m, MonadReader Config m) => FresCmd -> m ()
+sendCommand cmd = do
+    handle <- asks ioHandle
+    liftIO $ T.hPutStr handle (buildMessage cmd)
 
 fresParser :: Parser FresData
 fresParser = 
@@ -162,23 +171,25 @@ scanKeepAlive txt =
     testChar '\ENQ' = (True, Nothing)
     testChar c = (False, Just c)
 
-ioHandler :: SysIO.Handle -> Server FresCmd Text App ()
-ioHandler handle = forever $ do
+ioHandler :: Server FresCmd Text App ()
+ioHandler = forever $ do
+    handle <- asks ioHandle
     txt <- liftIO (T.hGetChunk handle)
     let (needKeepAlive, txt') = scanKeepAlive txt
-    when needKeepAlive $ liftIO $ sendCommand handle KeepAlive
+    when needKeepAlive $ sendCommand KeepAlive
     cmd <- respond txt'
     unless (cmd == Nop) (lastCommand .= cmd)
+    isready <- use readyToSend
     case cmd of
         Nop           -> return ()
-        AckTx         -> liftIO $ sendCommand handle cmd
-        AckVolEvent _ -> liftIO $ sendCommand handle cmd
-        _             -> do liftIO $ sendCommand handle cmd
-                            readyToSend .= False
+        AckTx         -> sendCommand cmd
+        AckVolEvent _ -> sendCommand cmd
+        _             -> when isready $ do sendCommand cmd
+                                           readyToSend .= False
 
 stateProxy :: Maybe FresData -> Proxy FresCmd (Maybe FresData) () FresData App ()
 stateProxy dat = do
-    --liftIO $ print dat
+    liftIO $ print dat --DEBUG
     curtime <- liftIO getPOSIXTime
     let ack = prependCommand AckTx
     let ready = readyToSend .= True
@@ -203,10 +214,8 @@ stateProxy dat = do
     -- Update list of connected syringes every 5s.
     when (curtime - enumtime > 5) $ do timeLastEnum .= curtime
                                        appendCommand EnumSyringes
-    --get >>= liftIO.print --DEBUG
-    isready <- use readyToSend
-    cmd <- if isready then popCommand else return Nop
-    request cmd >>= stateProxy
+    get >>= liftIO.print --DEBUG
+    popCommand >>= request >>= stateProxy
 
 prependCommand :: (MonadState CommState m) => FresCmd -> m ()
 prependCommand cmd = commands %= (:) cmd
@@ -233,14 +242,15 @@ fresMsgPack :: FresData -> M.Assoc [(String, M.Object)]
 fresMsgPack (VolEvent s vol) = M.Assoc [(show s, M.toObject vol)]
 fresMsgPack _                = M.Assoc [("error", M.ObjectNil)]
 
-pipeline :: SysIO.Handle -> Effect App ()
-pipeline handle = ioHandler handle >>~ parseProxy fresParser >>~ stateProxy >-> P.print
+pipeline :: Effect App ()
+pipeline = ioHandler >>~ parseProxy fresParser >>~ stateProxy >-> P.print
 
 runPipe :: SysIO.Handle -> IO ()
 runPipe handle = do
     curtime <- getPOSIXTime
     let initState = defaultState { _timeLastEnum = curtime }
-    runApp (runEffect $ pipeline handle) `evalStateT` initState
+    let config = Config { ioHandle = handle }
+    (runApp (runEffect pipeline) `runReaderT` config) `evalStateT` initState
 
 main :: IO ()
 main = do
