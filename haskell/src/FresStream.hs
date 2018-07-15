@@ -55,7 +55,7 @@ data FresCmd = Nop
 
 data FresData = NoData
               | AckRx
-              | NakRx
+              | NakRx Char
               | Correct
               | Incorrect
               | VolEvent Syringe Volume
@@ -68,7 +68,7 @@ data CommState = CommState {
     _timeLastEnum :: POSIXTime,
     _syringes :: [Syringe],
     _commands :: [FresCmd],
-    _currentCommand :: FresCmd
+    _lastCommand :: FresCmd
 }
     deriving (Show)
 
@@ -114,8 +114,8 @@ sendCommand h c = T.hPutStr h (buildMessage c)
 
 fresParser :: Parser FresData
 fresParser = 
-    (char '\ACK' *> pure AckRx)          <|>
-    (char '\NAK' *> digit *> pure NakRx) <|>
+    (char '\ACK' *> pure AckRx)        <|>
+    (NakRx <$> (char '\NAK' *> digit)) <|>
     parseFrame
 
 parseFrame :: Parser FresData
@@ -168,7 +168,7 @@ ioHandler handle = forever $ do
     let (needKeepAlive, txt') = scanKeepAlive txt
     when needKeepAlive $ liftIO $ sendCommand handle KeepAlive
     cmd <- respond txt'
-    currentCommand .= cmd
+    unless (cmd == Nop) (lastCommand .= cmd)
     case cmd of
         Nop           -> return ()
         AckTx         -> liftIO $ sendCommand handle cmd
@@ -178,21 +178,21 @@ ioHandler handle = forever $ do
 
 stateProxy :: Maybe FresData -> Proxy FresCmd (Maybe FresData) () FresData App ()
 stateProxy dat = do
+    --liftIO $ print dat
     curtime <- liftIO getPOSIXTime
     let ack = prependCommand AckTx
     let ready = readyToSend .= True
     let seen = timeLastSeen .= curtime
-    --liftIO $ print dat
     let dat' = fromMaybe NoData dat
     case dat' of
         NoData        -> return ()
         AckRx         -> return ()
-        NakRx         -> use currentCommand >>= prependCommand >> ready
+        NakRx _       -> use lastCommand >>= prependCommand >> ready
         Correct       -> seen >> ack >> ready
         Incorrect     -> ack >> ready
         SyringeEnum s -> seen >> ack >> ready >> connectNewSyringes s
         VolEvent s _  -> do prependCommand (AckVolEvent s)
-                            seen >> ack >> ready
+                            seen >> ack
                             yield dat'
     seentime <- use timeLastSeen
     enumtime <- use timeLastEnum
