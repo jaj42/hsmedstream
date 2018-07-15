@@ -170,22 +170,6 @@ scanKeepAlive txt =
     testChar '\ENQ' = (True, Nothing)
     testChar c = (False, Just c)
 
-ioHandler :: Server FresCmd Text App ()
-ioHandler = forever $ do
-    handle <- asks ioHandle
-    txt <- liftIO (T.hGetChunk handle)
-    let (needKeepAlive, txt') = scanKeepAlive txt
-    when needKeepAlive $ sendCommand KeepAlive
-    cmd <- respond txt'
-    unless (cmd == Nop) (lastCommand .= cmd)
-    isready <- use readyToSend
-    case cmd of
-        Nop           -> return ()
-        AckTx         -> sendCommand cmd
-        AckVolEvent _ -> sendCommand cmd
-        _             -> when isready $ do sendCommand cmd
-                                           readyToSend .= False
-
 stateProxy :: Maybe FresData -> Proxy FresCmd (Maybe FresData) () FresData App ()
 stateProxy dat = do
     liftIO $ print dat --DEBUG
@@ -215,6 +199,22 @@ stateProxy dat = do
                                        appendCommand EnumSyringes
     get >>= liftIO.print --DEBUG
     popCommand >>= request >>= stateProxy
+
+ioHandler :: Server FresCmd Text App ()
+ioHandler = forever $ do
+    handle <- asks ioHandle
+    txt <- liftIO (T.hGetChunk handle)
+    let (needKeepAlive, txt') = scanKeepAlive txt
+    when needKeepAlive $ sendCommand KeepAlive
+    cmd <- respond txt'
+    unless (cmd == Nop) (lastCommand .= cmd)
+    isready <- use readyToSend
+    case cmd of
+        Nop           -> return ()
+        AckTx         -> sendCommand cmd
+        AckVolEvent _ -> sendCommand cmd
+        _             -> when isready $ do sendCommand cmd
+                                           readyToSend .= False
 
 prependCommand :: (MonadState CommState m) => FresCmd -> m ()
 prependCommand cmd = commands %= (:) cmd
