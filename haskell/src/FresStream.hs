@@ -67,12 +67,13 @@ data CommState = CommState {
     _timeLastSeen :: POSIXTime,
     _timeLastEnum :: POSIXTime,
     _syringes :: [Syringe],
-    _commands :: [FresCmd]
+    _commands :: [FresCmd],
+    _currentCommand :: FresCmd
 }
     deriving (Show)
 
 makeLenses ''CommState
-defaultState = CommState True 0 0 [] []
+defaultState = CommState True 0 0 [] [] Nop
 
 newtype App a = App {
     runApp :: (StateT CommState IO) a
@@ -167,6 +168,7 @@ ioHandler handle = forever $ do
     let (needKeepAlive, txt') = scanKeepAlive txt
     when needKeepAlive $ liftIO $ sendCommand handle KeepAlive
     cmd <- respond txt'
+    currentCommand .= cmd
     case cmd of
         Nop           -> return ()
         AckTx         -> liftIO $ sendCommand handle cmd
@@ -180,11 +182,12 @@ stateProxy dat = do
     let ack = prependCommand AckTx
     let ready = readyToSend .= True
     let seen = timeLastSeen .= curtime
+    --liftIO $ print dat
     let dat' = fromMaybe NoData dat
     case dat' of
         NoData        -> return ()
         AckRx         -> return ()
-        NakRx         -> ready
+        NakRx         -> use currentCommand >>= prependCommand >> ready
         Correct       -> seen >> ack >> ready
         Incorrect     -> ack >> ready
         SyringeEnum s -> seen >> ack >> ready >> connectNewSyringes s
