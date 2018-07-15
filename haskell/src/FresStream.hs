@@ -88,17 +88,10 @@ newtype App a = App {
 fresSerialPortSettings :: S.SerialPortSettings
 fresSerialPortSettings = S.SerialPortSettings S.CS19200 7 S.One S.Even S.NoFlowControl 1
 
-generateChecksum :: Text -> Text
-generateChecksum msg =
-    let 
-        sall = sum $ ord <$> T.unpack msg
-        low = rem sall 0x100
-        checksum = 0xFF - low
-    in
-        T.pack $ toUpper <$> showHex checksum ""
-
-generateFrame :: Text -> Text
-generateFrame msg = "\STX" <> msg <> generateChecksum msg <> "\ETX"
+sendCommand :: (MonadIO m, MonadReader Config m) => FresCmd -> m ()
+sendCommand cmd = do
+    handle <- asks ioHandle
+    liftIO $ T.hPutStr handle (buildMessage cmd)
 
 buildMessage :: FresCmd -> Text
 buildMessage cmd =
@@ -115,11 +108,17 @@ buildMessage cmd =
     where
         assemble syringe msg = generateFrame $ (T.pack . show) syringe <> msg
 
+generateFrame :: Text -> Text
+generateFrame msg = "\STX" <> msg <> generateChecksum msg <> "\ETX"
 
-sendCommand :: (MonadIO m, MonadReader Config m) => FresCmd -> m ()
-sendCommand cmd = do
-    handle <- asks ioHandle
-    liftIO $ T.hPutStr handle (buildMessage cmd)
+generateChecksum :: Text -> Text
+generateChecksum msg =
+    let
+        sall = sum $ ord <$> T.unpack msg
+        low = rem sall 0x100
+        checksum = 0xFF - low
+    in
+        T.pack $ toUpper <$> showHex checksum ""
 
 fresParser :: Parser FresData
 fresParser = 
