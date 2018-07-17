@@ -54,8 +54,9 @@ data FresCmd = Nop
              | Connect Syringe
              | Disconnect Syringe
              | Subscribe Syringe
-             | EnumSyringes
-             | AckVolEvent Syringe
+             | SubscribeSyringes
+             | AckVolumeEvent Syringe
+             | AckSyringesEvent
     deriving (Show, Eq)
 
 data FresData = NoData
@@ -63,23 +64,28 @@ data FresData = NoData
               | NakRx Char
               | Correct
               | Incorrect
-              | VolEvent Syringe Volume
-              | SyringeEnum [Syringe]
+              | VolumeEvent Syringe Volume
+              | SyringesEvent [Syringe]
     deriving (Show, Eq)
 
 data CommState = CommState {
     _readyToSend :: Bool,
     _timeLastSeen :: POSIXTime,
-    _timeLastEnum :: POSIXTime,
     _syringes :: [Syringe],
     _commands :: [FresCmd],
-    _l2commands :: [FresCmd],
     _lastCommand :: FresCmd
 }
     deriving (Show)
 
 makeLenses ''CommState
-defaultState = CommState True 0 0 [] [] [] Nop
+
+defaultState = CommState {
+    _readyToSend = True,
+    _timeLastSeen = 0,
+    _syringes = [],
+    _commands = [],
+    _lastCommand = Nop
+}
 
 newtype App a = App {
     runApp :: (ReaderT Config (StateT CommState IO)) a
@@ -99,12 +105,13 @@ buildMessage cmd =
         Nop           -> ""
         AckTx         -> "\ACK"
         KeepAlive     -> "\DC4"
-        EnumSyringes  -> assemble 0 "LE;b"
         ConnectBase   -> assemble 0 "DC"
         Connect s     -> assemble s "DC"
         Disconnect s  -> assemble s "FC"
         Subscribe s   -> assemble s "DE;r"
-        AckVolEvent s -> assemble s "E"
+        SubscribeSyringes -> assemble 0 "DE;b"
+        AckVolumeEvent s -> assemble s "E"
+        AckSyringesEvent -> assemble 0 "E"
     where
         assemble syringe msg = generateFrame $ (T.pack . show) syringe <> msg
 
@@ -129,9 +136,9 @@ fresParser =
 parseFrame :: Parser FresData
 parseFrame = do
     char '\STX'
-    body <- parseVolEvent    <|>
-            parseSyringeEnum <|>
-            parseCorrect     <|>
+    body <- parseVolumeEvent   <|>
+            parseSyringesEvent <|>
+            parseCorrect       <|>
             parseIncorrect
     char '\ETX'
     return body
@@ -139,29 +146,29 @@ parseFrame = do
 parseCorrect   = digit *> char 'C' *> takeWhile (inClass " -~") *> pure Correct
 parseIncorrect = digit *> char 'I' *> takeWhile (inClass " -~") *> pure Incorrect
 
-parseSyringeEnum :: Parser FresData
-parseSyringeEnum = do
-    string "0C;b"
+parseSyringesEvent :: Parser FresData
+parseSyringesEvent = do
+    string "0E;b"
     hexval <- hexadecimal :: Parser Int
     let (syrbits, _) = quotRem hexval 0x100 -- rem is checksum
     let syrlist = (+1) <$> filter (testBit syrbits) [0..5]
-    return $ SyringeEnum syrlist
+    return $ SyringesEvent syrlist
 
-parseVolEvent :: Parser FresData
-parseVolEvent = do
+parseVolumeEvent :: Parser FresData
+parseVolumeEvent = do
     syringe <- decimal
     string "E;r"
     hexval <- hexadecimal :: Parser Int
     let (volume, _) = quotRem hexval 0x100 -- rem is checksum
-    return $ VolEvent syringe (fromIntegral volume / 1000)
+    return $ VolumeEvent syringe (fromIntegral volume / 1000)
 
 --- | Scan the text for the 'ENQ' caracter. Strip out the 'ENQ' caracter
 --- from the text and return a keep-alive request indicator as well as
 --- the stripped text.
 scanKeepAlive :: Text -> (Bool, Text)
 scanKeepAlive txt =
-    let (reqtx, pretxt) = unzip (fstpass txt)
-    in (or reqtx, T.pack $ catMaybes pretxt)
+    let (reqka, pretxt) = unzip (fstpass txt)
+    in (or reqka, T.pack $ catMaybes pretxt)
   where
     fstpass :: Text -> [(Bool, Maybe Char)]
     fstpass txt = case T.uncons txt of
@@ -172,32 +179,28 @@ scanKeepAlive txt =
 
 stateProxy :: Maybe FresData -> Proxy FresCmd (Maybe FresData) () FresData App ()
 stateProxy dat = do
-    liftIO $ print dat --DEBUG
-    curtime <- liftIO getPOSIXTime
+    --liftIO $ print dat --DEBUG
     let ack = prependCommand AckTx
     let ready = readyToSend .= True
-    let seen = timeLastSeen .= curtime
     let dat' = fromMaybe NoData dat
     case dat' of
-        NoData        -> return ()
-        AckRx         -> return ()
-        NakRx _       -> use lastCommand >>= prependCommand >> ready
-        Correct       -> seen >> ack >> ready
-        Incorrect     -> ack >> ready
-        SyringeEnum s -> seen >> ack >> ready >> connectNewSyringes s
-        VolEvent s _  -> do prependCommand (AckVolEvent s)
-                            seen >> ack
-                            yield dat'
+        NoData          -> return ()
+        AckRx           -> return ()
+        NakRx _         -> use lastCommand >>= prependCommand >> ready
+        Correct         -> ack >> ready
+        Incorrect       -> ack >> ready
+        SyringesEvent s -> do prependCommand AckSyringesEvent
+                              ack >> connectNewSyringes s
+        VolumeEvent s _ -> do prependCommand (AckVolumeEvent s)
+                              ack >> yield dat'
+    curtime <- liftIO getPOSIXTime
     seentime <- use timeLastSeen
-    enumtime <- use timeLastEnum
-    -- No news for more than 10s? We are no longer connected
-    when (curtime - seentime > 10) $ put defaultState { _timeLastSeen = curtime,
-                                                        _commands = [ConnectBase]
-                                                      }
-    -- Update list of connected syringes every 5s.
-    when (curtime - enumtime > 5) $ do timeLastEnum .= curtime
-                                       appendCommand EnumSyringes
-    get >>= liftIO.print --DEBUG
+    -- No news for more than 1 second? We are no longer connected
+    when (curtime - seentime > 1) $ do liftIO $ print ("Base timeout. Trying to reconnect.")
+                                       put defaultState { _timeLastSeen = curtime,
+                                                          _commands = [ConnectBase, SubscribeSyringes]
+                                                        }
+    --get >>= liftIO.print --DEBUG
     popCommand >>= request >>= stateProxy
 
 ioHandler :: Server FresCmd Text App ()
@@ -205,22 +208,27 @@ ioHandler = forever $ do
     handle <- asks ioHandle
     txt <- liftIO (T.hGetChunk handle)
     let (needKeepAlive, txt') = scanKeepAlive txt
-    when needKeepAlive $ sendCommand KeepAlive
+    when needKeepAlive $ do sendCommand KeepAlive
+                            curtime <- liftIO getPOSIXTime
+                            timeLastSeen .= curtime
     cmd <- respond txt'
     unless (cmd == Nop) (lastCommand .= cmd)
     isready <- use readyToSend
     case cmd of
-        Nop           -> return ()
-        AckTx         -> sendCommand cmd
-        AckVolEvent _ -> sendCommand cmd
-        _             -> when isready $ do sendCommand cmd
-                                           readyToSend .= False
+        Nop              -> return ()
+        AckTx            -> sendCommand cmd
+        AckSyringesEvent -> sendCommand cmd
+        AckVolumeEvent _ -> sendCommand cmd
+        _                -> case isready of
+                                 True  -> do sendCommand cmd
+                                             readyToSend .= False
+                                 False -> prependCommand cmd
 
 prependCommand :: (MonadState CommState m) => FresCmd -> m ()
-prependCommand cmd = commands %= (:) cmd
+prependCommand cmd = commands %= \cmds -> cmd:cmds
 
 appendCommand :: (MonadState CommState m) => FresCmd -> m ()
-appendCommand cmd = commands %= flip (++) [cmd]
+appendCommand cmd = commands %= \cmds -> cmds ++ [cmd]
 
 popCommand :: (MonadState CommState m) => m FresCmd
 popCommand = do
@@ -238,17 +246,16 @@ connectNewSyringes newlist = do
     syringes .= newlist
 
 fresMsgPack :: FresData -> M.Assoc [(String, M.Object)]
-fresMsgPack (VolEvent s vol) = M.Assoc [(show s, M.toObject vol)]
-fresMsgPack _                = M.Assoc [("error", M.ObjectNil)]
+fresMsgPack (VolumeEvent s vol) = M.Assoc [(show s, M.toObject vol)]
+fresMsgPack _                   = M.Assoc [("error", M.ObjectNil)]
 
 pipeline :: Effect App ()
 pipeline = ioHandler >>~ parseProxy fresParser >>~ stateProxy >-> P.print
 
 runPipe :: SysIO.Handle -> IO ()
 runPipe handle = do
-    curtime <- getPOSIXTime
-    let initState = defaultState { _timeLastEnum = curtime }
     let config = Config { ioHandle = handle }
+    let initState = defaultState { _commands = [ConnectBase, SubscribeSyringes]}
     (runApp (runEffect pipeline) `runReaderT` config) `evalStateT` initState
 
 main :: IO ()
