@@ -177,6 +177,27 @@ scanKeepAlive txt =
     testChar '\ENQ' = (True, Nothing)
     testChar c = (False, Just c)
 
+ioHandler :: Server FresCmd Text App ()
+ioHandler = forever $ do
+    handle <- asks ioHandle
+    txt <- liftIO (T.hGetChunk handle)
+    let (needKeepAlive, txt') = scanKeepAlive txt
+    when needKeepAlive $ do sendCommand KeepAlive
+                            curtime <- liftIO getPOSIXTime
+                            timeLastSeen .= curtime
+    cmd <- respond txt'
+    unless (cmd == Nop) (lastCommand .= cmd)
+    isready <- use readyToSend
+    case cmd of
+        Nop              -> return ()
+        AckTx            -> sendCommand cmd
+        AckSyringesEvent -> sendCommand cmd
+        AckVolumeEvent _ -> sendCommand cmd
+        _                -> case isready of
+                                 True  -> do sendCommand cmd
+                                             readyToSend .= False
+                                 False -> prependCommand cmd
+
 stateProxy :: Maybe FresData -> Proxy FresCmd (Maybe FresData) () FresData App ()
 stateProxy dat = do
     --liftIO $ print dat --DEBUG
@@ -202,27 +223,6 @@ stateProxy dat = do
                                                         }
     --get >>= liftIO.print --DEBUG
     popCommand >>= request >>= stateProxy
-
-ioHandler :: Server FresCmd Text App ()
-ioHandler = forever $ do
-    handle <- asks ioHandle
-    txt <- liftIO (T.hGetChunk handle)
-    let (needKeepAlive, txt') = scanKeepAlive txt
-    when needKeepAlive $ do sendCommand KeepAlive
-                            curtime <- liftIO getPOSIXTime
-                            timeLastSeen .= curtime
-    cmd <- respond txt'
-    unless (cmd == Nop) (lastCommand .= cmd)
-    isready <- use readyToSend
-    case cmd of
-        Nop              -> return ()
-        AckTx            -> sendCommand cmd
-        AckSyringesEvent -> sendCommand cmd
-        AckVolumeEvent _ -> sendCommand cmd
-        _                -> case isready of
-                                 True  -> do sendCommand cmd
-                                             readyToSend .= False
-                                 False -> prependCommand cmd
 
 prependCommand :: (MonadState CommState m) => FresCmd -> m ()
 prependCommand cmd = commands %= \cmds -> cmd:cmds
