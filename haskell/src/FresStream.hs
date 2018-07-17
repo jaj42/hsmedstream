@@ -87,8 +87,8 @@ defaultState = CommState {
     _lastCommand = Nop
 }
 
-newtype App a = App {
-    runApp :: (ReaderT Config (StateT CommState IO)) a
+newtype App m a = App {
+    runApp :: (ReaderT Config (StateT CommState m)) a
 }   deriving (Functor, Applicative, Monad, MonadIO, MonadState CommState, MonadReader Config)
 
 fresSerialPortSettings :: S.SerialPortSettings
@@ -110,8 +110,8 @@ buildMessage cmd =
         Disconnect s  -> assemble s "FC"
         Subscribe s   -> assemble s "DE;r"
         SubscribeSyringes -> assemble 0 "DE;b"
-        AckVolumeEvent s -> assemble s "E"
-        AckSyringesEvent -> assemble 0 "E"
+        AckVolumeEvent s  -> assemble s "E"
+        AckSyringesEvent  -> assemble 0 "E"
     where
         assemble syringe msg = generateFrame $ (T.pack . show) syringe <> msg
 
@@ -177,7 +177,7 @@ scanKeepAlive txt =
     testChar '\ENQ' = (True, Nothing)
     testChar c = (False, Just c)
 
-ioHandler :: Server FresCmd Text App ()
+ioHandler :: MonadIO m => Server FresCmd Text (App m) ()
 ioHandler = forever $ do
     handle <- asks ioHandle
     txt <- liftIO (T.hGetChunk handle)
@@ -198,7 +198,7 @@ ioHandler = forever $ do
                                              readyToSend .= False
                                  False -> prependCommand cmd
 
-stateProxy :: Maybe FresData -> Proxy FresCmd (Maybe FresData) () FresData App ()
+stateProxy :: MonadIO m => Maybe FresData -> Proxy FresCmd (Maybe FresData) () FresData (App m) ()
 stateProxy dat = do
     --liftIO $ print dat --DEBUG
     let ack = prependCommand AckTx
@@ -249,7 +249,7 @@ fresMsgPack :: FresData -> M.Assoc [(String, M.Object)]
 fresMsgPack (VolumeEvent s vol) = M.Assoc [(show s, M.toObject vol)]
 fresMsgPack _                   = M.Assoc [("error", M.ObjectNil)]
 
-pipeline :: Effect App ()
+pipeline :: MonadIO m => Effect (App m) ()
 pipeline = ioHandler >>~ parseProxy fresParser >>~ stateProxy >-> P.print
 
 runPipe :: SysIO.Handle -> IO ()
