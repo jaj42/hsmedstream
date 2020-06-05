@@ -37,7 +37,7 @@ def stateWorker(stopevent):
         try:
             modids = base.listModules()
             for modid in modids:
-                if not modid in base.syringes:
+                if modid not in base.syringes:
                     s = base.connectSyringe(modid)
                 s.registerEvent(fresenius.VarId.volume)
         except fresenius.CommandError as e:
